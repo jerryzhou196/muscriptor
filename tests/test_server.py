@@ -345,7 +345,9 @@ def _post_transcribe(app, payload, client_id, out, name):
 
 def test_concurrent_different_clients_do_not_preempt(tmp_path):
     """The reported bug: a second window (different client id) must NOT stop the
-    transcription already in progress — it waits for the lock instead."""
+    transcription already in progress. It also must not wait around for the
+    lock: it gets an immediate 503 (so a caller retrying against another
+    machine, e.g. behind Traefik, doesn't sit on the connection)."""
     first_reached = threading.Event()
     gate = threading.Event()
     model, s0 = _blocking_transcribe_model(first_reached, gate)
@@ -357,13 +359,19 @@ def test_concurrent_different_clients_do_not_preempt(tmp_path):
     a.start()
     assert first_reached.wait(timeout=5)  # A holds the lock, mid-stream
 
-    b = threading.Thread(target=_post_transcribe, args=(app, payload, "tab-B", out, "B"))
-    b.start()
-    # Give B time to reach the lock; with broken scoping it would cancel A here.
-    time.sleep(0.5)
+    # B, a different client, is refused immediately rather than queued.
+    client_b = TestClient(app)
+    started = time.monotonic()
+    resp_b = client_b.post(
+        "/transcribe",
+        files={"file": ("silent.wav", payload, "audio/wav")},
+        headers={"X-Client-Id": "tab-B"},
+    )
+    assert time.monotonic() - started < 2.0  # no ~60s (or even multi-second) wait
+    assert resp_b.status_code == 503
+
     gate.set()
     a.join(timeout=10)
-    b.join(timeout=10)
 
     # A ran to completion (ends with the assembled MIDI event) — not preempted.
     assert out["A"][0] == event_to_dict(s0)
@@ -371,8 +379,15 @@ def test_concurrent_different_clients_do_not_preempt(tmp_path):
         "type": "midi",
         "data": base64.b64encode(FAKE_MIDI).decode("ascii"),
     }
-    # B, a different client, also completed — after waiting its turn.
-    assert out["B"][-1]["type"] == "midi"
+
+    # Once A has released the lock, B's retry (as the frontend would send)
+    # succeeds normally.
+    resp_b_retry = client_b.post(
+        "/transcribe",
+        files={"file": ("silent.wav", payload, "audio/wav")},
+        headers={"X-Client-Id": "tab-B"},
+    )
+    assert _parse_sse(resp_b_retry.text)[-1]["type"] == "midi"
     assert model.transcribe.call_count == 2
 
 
