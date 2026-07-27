@@ -253,6 +253,10 @@ export function App() {
             : null,
         );
         roll.render();
+        // The roll re-engages follow mode on its own when the user scrolls back
+        // to the live transcription frontier and holds still — mirror that into
+        // the follow toggle's state.
+        if (roll.consumeAutoResumed()) setUserScrolled(false);
       }
       if (clockRef.current) clockRef.current.textContent = `${audio.seconds.toFixed(1)}s`;
       // Drive the progress bar straight to the DOM (only mounted while

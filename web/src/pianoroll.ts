@@ -32,6 +32,23 @@ function easeOut(t: number): number {
   return 1 - u * u * u;
 }
 
+/**
+ * Where in the content area the followed position sits, as a fraction of the
+ * view width. Shared by playhead-follow and transcription-follow.
+ */
+const FOLLOW_ANCHOR_FRACTION = 0.66;
+/**
+ * A playhead below this (seconds) counts as "at the start" i.e. the user
+ * hasn't begun listening yet, and we will auto-follow the transcription progress.
+ */
+const PLAYHEAD_START_EPS = 0.05;
+/** Per-frame easing of the frontier value. */
+const FRONTIER_SMOOTHING = 0.12;
+/** Per-frame easing of the *view offset* toward the anchored frontier */
+const FRONTIER_FOLLOW_SMOOTHING = 0.06;
+/** Idle time (ms) after a scroll gesture before auto-follow may re-engage. */
+const RESUME_IDLE_MS = 1000;
+
 const PX_PER_SEC = 80;
 const MIN_PX_PER_SEC = 10;
 const MAX_PX_PER_SEC = 2000;
@@ -126,6 +143,17 @@ export class PianoRoll {
   private transcribedSmooth = 0;
   /** Seconds-from-start of the left edge when the user has taken over scrolling. */
   private userOffset: number | null = null;
+  /**
+   * `performance.now()` of the last user scroll/zoom gesture, and whether that
+   * gesture (as opposed to the explicit follow toggle) is what stopped
+   * following. Together they drive the auto-resume in {@link render}: a scroll
+   * that leaves the transcription frontier in view re-engages follow mode after
+   * {@link RESUME_IDLE_MS} of quiet, while an explicit unfollow stays put.
+   */
+  private lastGestureAt = 0;
+  private resumeArmed = false;
+  /** Set when the auto-resume fired; read (and cleared) by {@link consumeAutoResumed}. */
+  private autoResumed = false;
   /** Last offset we rendered with — handy so external code knows what's visible. */
   private lastOffset = 0;
   /** Time-axis zoom, in pixels per second. */
@@ -237,6 +265,9 @@ export class PianoRoll {
     this.latestNoteStart = 0;
     this.transcribedSmooth = 0;
     this.userOffset = null;
+    this.lastGestureAt = 0;
+    this.resumeArmed = false;
+    this.autoResumed = false;
     this.lastOffset = 0;
     this._pxPerSec = PX_PER_SEC;
     this.pxPerPitch = null;
@@ -244,14 +275,25 @@ export class PianoRoll {
     this.contentDuration = 0;
   }
 
+  /**
+   * Mark a user scroll/zoom gesture: restarts the auto-resume idle timer and
+   * arms it, so follow mode may come back on its own once the gesture settles.
+   */
+  private noteGesture() {
+    this.lastGestureAt = performance.now();
+    this.resumeArmed = true;
+  }
+
   /** Add `deltaSeconds` to the left-edge offset, taking the view out of follow mode. */
   scrollBy(deltaSeconds: number) {
     const base = this.userOffset ?? this.lastOffset;
     this.userOffset = this.clampOffset(base + deltaSeconds, this._pxPerSec);
+    this.noteGesture();
   }
 
   /** Pan the pitch axis by `deltaPx` pixels. */
   scrollPitchBy(deltaPx: number) {
+    this.noteGesture();
     const H = this.canvas.getBoundingClientRect().height;
     if (this.pxPerPitch === null) {
       // Auto-fit hides everything above C6; entering a panned window at the
@@ -272,6 +314,7 @@ export class PianoRoll {
    * subtracted here so the content area starts at zero seconds-from-offset.
    */
   zoomTime(factor: number, anchorX: number) {
+    this.noteGesture();
     const old = this._pxPerSec;
     const next = Math.min(MAX_PX_PER_SEC, Math.max(MIN_PX_PER_SEC, old * factor));
     if (next === old) return;
@@ -284,6 +327,7 @@ export class PianoRoll {
 
   /** Zoom the pitch axis by `factor`, keeping the pitch under `anchorY` (px) fixed. */
   zoomPitch(factor: number, anchorY: number) {
+    this.noteGesture();
     const H = this.canvas.getBoundingClientRect().height;
     const fit = H / DEFAULT_PITCH_RANGE;
     const oldRowH = this.pxPerPitch ?? fit;
@@ -309,15 +353,30 @@ export class PianoRoll {
   /** Resume auto-following the playhead. */
   follow() {
     this.userOffset = null;
+    this.resumeArmed = false;
   }
 
   /** Take over scrolling: freeze the view at its current offset. */
   unfollow() {
     this.userOffset = this.lastOffset;
+    // An explicit unfollow means it, so it isn't undone by the auto-resume.
+    this.resumeArmed = false;
   }
 
   get isFollowing(): boolean {
     return this.userOffset === null;
+  }
+
+  /**
+   * True once after follow mode re-engaged on its own (the user scrolled back to
+   * the live transcription frontier and then sat still). Lets the React side
+   * light the "following" indicator back up without polling `isFollowing`, which
+   * would also override the toggle in cases the roll doesn't own.
+   */
+  consumeAutoResumed(): boolean {
+    const v = this.autoResumed;
+    this.autoResumed = false;
+    return v;
   }
 
   /** Translate a canvas-relative x pixel coordinate to a transport-time in seconds. */
@@ -356,22 +415,62 @@ export class PianoRoll {
     const H = rect.height;
     ctx.clearRect(0, 0, W, H);
 
-    // Auto-scroll: keep the view still while the playhead is inside it; only
-    // scroll once the playhead reaches the right third (or leaves the view to
-    // the left, e.g. on stop). Manual scrolling (userOffset !== null) wins.
     // The note area starts after the key strip; only that width shows time.
     const contentW = W - KEY_WIDTH;
     const maxT = Math.max(this.maxEnd(), this.playhead + 1);
     const viewSec = contentW / this._pxPerSec;
+
+    // Ease the transcribed frontier toward its target.
+    // null = not transcribing, which turns both the tint and the follow off.
+    if (this.chunkFrontier !== null) {
+      const target = Math.max(this.chunkFrontier, this.latestNoteStart);
+      // Snap once effectively there, so it doesn't creep forever.
+      this.transcribedSmooth += (target - this.transcribedSmooth) * FRONTIER_SMOOTHING;
+      if (Math.abs(target - this.transcribedSmooth) < 0.01) {
+        this.transcribedSmooth = target;
+      }
+    } else {
+      this.transcribedSmooth = 0; // tint off once transcription finishes
+    }
+    const frontier = this.chunkFrontier !== null ? this.transcribedSmooth : null;
+    // Until the user starts listening, the frontier is the interesting edge, so
+    // the view follows it instead of the playhead parked at zero.
+    const followFrontier = frontier !== null && this.playhead <= PLAYHEAD_START_EPS;
+
+    // A scroll gesture (unlike the explicit follow toggle) only pauses
+    // following: if it leaves the moving frontier in view, follow re-engages
+    // once the user has been still for a second — so glancing back and
+    // returning doesn't cost them the auto-scroll.
+    if (this.userOffset !== null && this.resumeArmed && followFrontier) {
+      const inView = frontier >= this.userOffset && frontier <= this.userOffset + viewSec;
+      if (inView && performance.now() - this.lastGestureAt >= RESUME_IDLE_MS) {
+        this.userOffset = null;
+        this.resumeArmed = false;
+        this.autoResumed = true;
+      }
+    }
+
+    // Auto-scroll: keep the view still while the playhead is inside it; only
+    // scroll once the playhead reaches the right third (or leaves the view to
+    // the left, e.g. on stop). Manual scrolling (userOffset !== null) wins.
     let offsetSec: number;
     if (this.userOffset !== null) {
       // Re-clamp each frame so a window resize or newly-streamed notes can't
       // leave the frozen view stranded past the content end.
       offsetSec = Math.max(0, Math.min(this.userOffset, Math.max(0, this.contentEnd() - viewSec)));
+    } else if (followFrontier) {
+      // Ease toward parking the frontier at the follow anchor. The frontier is
+      // already smoothed, so this second ease just adds a little give.
+      const target = Math.max(
+        0,
+        Math.min(frontier - viewSec * FOLLOW_ANCHOR_FRACTION, Math.max(0, this.contentEnd() - viewSec)),
+      );
+      offsetSec = this.lastOffset + (target - this.lastOffset) * FRONTIER_FOLLOW_SMOOTHING;
+      if (Math.abs(target - offsetSec) < 0.005) offsetSec = target;
     } else {
       offsetSec = this.lastOffset;
-      if (this.playhead > offsetSec + viewSec * 0.66) {
-        offsetSec = this.playhead - viewSec * 0.66;
+      if (this.playhead > offsetSec + viewSec * FOLLOW_ANCHOR_FRACTION) {
+        offsetSec = this.playhead - viewSec * FOLLOW_ANCHOR_FRACTION;
       } else if (this.playhead < offsetSec) {
         offsetSec = this.playhead;
       }
@@ -417,22 +516,14 @@ export class PianoRoll {
     // Transcribed-so-far overlay: a faint light wash over the [0, t) time span
     // the backend has already processed. The frontier is the furthest of the
     // chunk-completion estimate (which advances across silent spans) and the
-    // latest note onset (precise where notes exist), eased toward each frame so
-    // it glides instead of snapping when an anchor lands or a note starts. Drawn
-    // over the grid but under the notes so they stay crisp; clipped to content.
-    if (this.chunkFrontier !== null) {
-      const target = Math.max(this.chunkFrontier, this.latestNoteStart);
-      // ~12%/frame ≈ a 150 ms ease at 60 fps; snap once effectively there.
-      this.transcribedSmooth += (target - this.transcribedSmooth) * 0.12;
-      if (Math.abs(target - this.transcribedSmooth) < 0.01) {
-        this.transcribedSmooth = target;
-      }
+    // latest note onset (precise where notes exist); it's eased above, before
+    // the scroll decision. Drawn over the grid but under the notes so they stay
+    // crisp; clipped to content.
+    if (frontier !== null) {
       const x0 = KEY_WIDTH + (0 - offsetSec) * pxPerSec;
-      const x1 = KEY_WIDTH + (this.transcribedSmooth - offsetSec) * pxPerSec;
+      const x1 = KEY_WIDTH + (frontier - offsetSec) * pxPerSec;
       ctx.fillStyle = "rgba(255, 255, 255, 0.05)";
       ctx.fillRect(x0, 0, x1 - x0, H);
-    } else {
-      this.transcribedSmooth = 0; // tint off once transcription finishes
     }
 
     // Notes
