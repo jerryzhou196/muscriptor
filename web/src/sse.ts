@@ -11,19 +11,31 @@ export class TranscribeError extends Error {
   }
 }
 
-/** Stream SSE `data:` JSON payloads from a POST upload of `file`.
- *
- *  `clientId`, when given, is sent as the `X-Client-Id` header. The server uses
- *  it to scope preemption: a new request only cancels an in-flight one that
- *  carries the same id (a resubmit from this same tab). Two tabs send different
- *  ids, so opening a second one no longer stops the first tab's transcription. */
+export interface TranscribeOptions {
+  /** Extra multipart form fields to send alongside the file (e.g. instruments). */
+  extra?: Record<string, string | string[]>;
+  signal?: AbortSignal;
+  /** Sent as the `X-Client-Id` header. The server uses it to scope preemption: a
+   *  new request only cancels an in-flight one that carries the same id (a
+   *  resubmit from this same tab). Two tabs send different ids, so opening a
+   *  second one no longer stops the first tab's transcription. */
+  clientId?: string;
+  /** Called once the server has accepted the upload (2xx — it holds the
+   *  transcription lock and the stream is opening). The UI waits for this before
+   *  leaving the welcome screen, so a refused attempt never navigates away. */
+  onAccepted?: () => void;
+  /** Called on each 503 refusal (another transcription is in progress), with the
+   *  wait until the next attempt. Only `streamTranscribeWithRetry` reports it. */
+  onBusy?: (info: { attempt: number; retryInMs: number }) => void;
+}
+
+/** Stream SSE `data:` JSON payloads from a POST upload of `file`. */
 export async function* streamTranscribe(
   url: string,
   file: File,
-  extra?: Record<string, string | string[]>,
-  signal?: AbortSignal,
-  clientId?: string,
+  opts: TranscribeOptions = {},
 ): AsyncGenerator<unknown> {
+  const { extra, signal, clientId, onAccepted } = opts;
   const form = new FormData();
   form.append("file", file, file.name);
   if (extra) {
@@ -54,6 +66,7 @@ export async function* streamTranscribe(
       status: resp.status,
     });
   }
+  onAccepted?.();
   const reader = resp.body
     .pipeThrough(new TextDecoderStream())
     .getReader();
@@ -71,6 +84,55 @@ export async function* streamTranscribe(
           yield JSON.parse(line.slice(6));
         }
       }
+    }
+  }
+}
+
+/** Resolves after `ms`, or rejects immediately (or as soon as it fires) with
+ *  an `AbortError` if `signal` is aborted — so a retry wait can't outlive the
+ *  request it's retrying. */
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        reject(new DOMException("Aborted", "AbortError"));
+      },
+      { once: true },
+    );
+  });
+}
+
+const RETRY_INTERVAL_MS = 5000;
+
+/** Like `streamTranscribe`, but transparently retries every
+ *  `RETRY_INTERVAL_MS` when the server reports 503 (busy with another
+ *  transcription). The backend refuses instantly rather than holding the
+ *  connection open, so a reverse proxy fronting multiple backends (e.g.
+ *  Traefik) gets a chance to route each retry to a different, idle machine.
+ *
+ *  Each refusal is reported through `opts.onBusy` so the UI can say the servers
+ *  are busy and count down to the next attempt; `opts.onAccepted` fires on the
+ *  attempt that gets through. */
+export async function* streamTranscribeWithRetry(
+  url: string,
+  file: File,
+  opts: TranscribeOptions = {},
+): AsyncGenerator<unknown> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      yield* streamTranscribe(url, file, opts);
+      return;
+    } catch (e) {
+      if (!(e instanceof TranscribeError) || e.status !== 503) throw e;
+      opts.onBusy?.({ attempt, retryInMs: RETRY_INTERVAL_MS });
+      await delay(RETRY_INTERVAL_MS, opts.signal);
     }
   }
 }
