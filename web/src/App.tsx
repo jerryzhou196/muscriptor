@@ -24,6 +24,20 @@ import { ProgressEstimator, formatClock } from "./progress";
 
 type Screen = "welcome" | "transcribe";
 
+/**
+ * What has happened to the upload since "Transcribe" was clicked. The welcome
+ * screen stays put until the server accepts the request, so a server that is
+ * busy with someone else's transcription never yanks the user into an empty
+ * piano roll — the button reports the wait instead.
+ *
+ * `submitting` = request in flight; `busy` = refused with 503, retrying at
+ * `retryAt` (a `Date.now()` timestamp, so the button can count down to it).
+ */
+export type SubmitState =
+  | { phase: "idle" }
+  | { phase: "submitting" }
+  | { phase: "busy"; retryAt: number; attempt: number };
+
 // The song is Headache by Lost Deposit. ig: @lostdeposit
 const EXAMPLE = {
   url: "/headache_by_lost_deposit_1min.mp3",
@@ -51,6 +65,7 @@ export function App() {
   const [screen, setScreen] = useState<Screen>("welcome");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [appState, setAppState] = useState<AppState>("idle");
+  const [submit, setSubmit] = useState<SubmitState>({ phase: "idle" });
   // Shown on the welcome screen: a server-down notice (set when the /health
   // check fails) or a per-file error (set when a transcription is rejected).
   // null = healthy and no file error.
@@ -84,9 +99,18 @@ export function App() {
     progress,
     // A failed transcription bounces back to the welcome screen with a message.
     onError: (message) => {
+      setSubmit({ phase: "idle" });
       setError({ kind: "file", message });
       setScreen("welcome");
     },
+    // The server took the job: only now is there something to show.
+    onAccepted: () => {
+      setSubmit({ phase: "idle" });
+      setScreen("transcribe");
+    },
+    // Refused (503) — stay on the welcome screen and count down to the retry.
+    onBusy: ({ attempt, retryInMs }) =>
+      setSubmit({ phase: "busy", retryAt: Date.now() + retryInMs, attempt }),
     setAppState,
     setInstruments,
     setMidiUrl,
@@ -95,11 +119,13 @@ export function App() {
     setUserScrolled,
     midiFilenameRef,
   });
-  // Start transcribing the file picked on the welcome screen and switch views.
-  // Called from a button click, so the AudioContext unlock inside `transcribe`
-  // still happens under a user gesture.
+  // Submit the file picked on the welcome screen. The view only switches once
+  // the server has accepted the request (`onAccepted` above); until then the
+  // button reports progress — including waiting out a busy server. Called from
+  // a button click, so the AudioContext unlock inside `transcribe` still
+  // happens under a user gesture.
   function startTranscription() {
-    if (selectedFile === null) return;
+    if (selectedFile === null || submit.phase !== "idle") return;
     track("transcription_start", {
       instruments: Array.from(condSelected).sort().join(",") || "(none)",
       instrument_count: condSelected.size,
@@ -109,8 +135,23 @@ export function App() {
     });
     // Drop any leftover file error from a previous failed attempt.
     setError(null);
-    setScreen("transcribe");
+    setSubmit({ phase: "submitting" });
     transcribe(selectedFile);
+  }
+
+  // Give up on a submission that hasn't been accepted yet (in flight, or waiting
+  // out a busy server): stop retrying and re-enable the button.
+  function cancelSubmit() {
+    abort();
+    setSubmit({ phase: "idle" });
+    setAppState("idle");
+  }
+
+  // Choosing another file drops a not-yet-accepted submission, so a request that
+  // finally gets through can't open the piano roll for the old file.
+  function pickFile(file: File) {
+    if (submit.phase !== "idle") cancelSubmit();
+    setSelectedFile(file);
   }
 
   // Tear down the current transcription (in-flight or finished) and return to
@@ -129,6 +170,7 @@ export function App() {
     setMidiBlob(null);
     setUserScrolled(false);
     setAppState("idle");
+    setSubmit({ phase: "idle" });
     setScreen("welcome");
   }
 
@@ -148,7 +190,7 @@ export function App() {
     const blob = await resp.blob();
     const file = new File([blob], EXAMPLE.filename, { type: "audio/mpeg" });
     setCondSelected(new Set(EXAMPLE.conditioning));
-    setSelectedFile(file);
+    pickFile(file);
   }
 
   // A file dropped anywhere on the page selects it on the welcome screen, from
@@ -165,7 +207,7 @@ export function App() {
         return;
       resetToWelcome();
     }
-    setSelectedFile(file);
+    pickFile(file);
   }
   const dropRef = useRef(onDropFile);
   dropRef.current = onDropFile;
@@ -253,6 +295,10 @@ export function App() {
             : null,
         );
         roll.render();
+        // The roll re-engages follow mode on its own when the user scrolls back
+        // to the live transcription frontier and holds still — mirror that into
+        // the follow toggle's state.
+        if (roll.consumeAutoResumed()) setUserScrolled(false);
       }
       if (clockRef.current) clockRef.current.textContent = `${audio.seconds.toFixed(1)}s`;
       // Drive the progress bar straight to the DOM (only mounted while
@@ -328,11 +374,13 @@ export function App() {
       {screen === "welcome" ? (
         <WelcomeScreen
           selectedFile={selectedFile}
-          onPickFile={setSelectedFile}
+          onPickFile={pickFile}
           onUseExample={useExample}
           condSelected={condSelected}
           onCondChange={setCondSelected}
           onTranscribe={startTranscription}
+          submitState={submit}
+          onCancelSubmit={cancelSubmit}
           dragging={dragging}
           error={error}
           setError={setError}

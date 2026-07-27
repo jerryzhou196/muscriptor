@@ -77,7 +77,6 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
     app = FastAPI(title="muscriptor")
 
     transcribe_lock = threading.Lock()
-    lock_timeout_s = 60.0
     # State of the run currently holding the lock (or the last one to have held
     # it), guarded by `cancel_guard`: its cancel event and the id of the client
     # that started it. A new /transcribe from the SAME client (a resubmit in
@@ -93,14 +92,23 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
     cancel_guard = threading.Lock()
     current_cancel: threading.Event | None = None
     current_client: str | None = None
+    # Bound on how long a same-client resubmit waits for the run it just
+    # cancelled to unwind and release the lock. That run stops within one
+    # chunk boundary, so this only needs to cover that latency — unlike
+    # genuine cross-client contention, which now fails instantly instead of
+    # sitting on the connection (see below).
+    preempt_wait_s = 5.0
 
     async def acquire_transcribe_lock(
         client_id: str | None, cancellable: bool
     ) -> tuple[threading.Event | None, Callable[[], None]]:
         """Acquire the single-transcription lock, preempting only a run started
-        by this same `client_id` (a resubmit). A different client — or an
-        anonymous API caller with no id — never preempts and is never preempted;
-        it just waits for the lock (up to `lock_timeout_s`, then 503).
+        by this same `client_id` (a resubmit): that run is signalled to stop
+        and this call waits up to `preempt_wait_s` for it to release the lock.
+        A different client — or an anonymous API caller with no id — never
+        preempts and is never preempted; it gets an immediate 503 instead of
+        waiting, so a caller retrying against another machine (e.g. behind a
+        load balancer like Traefik) doesn't have to hold the connection open.
 
         Returns `(cancel, release)`: `cancel` is the new run's cancel event
         (`None` when `cancellable` is False, e.g. the blocking /transcribe/midi
@@ -108,19 +116,30 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
         most once, from whichever cleanup path runs first.
         """
         nonlocal current_cancel, current_client
-        deadline = time.monotonic() + lock_timeout_s
+        deadline: float | None = None
         while True:
             with cancel_guard:
-                # Re-signal each iteration so that even a same-client run which
-                # started while we were already waiting (a resubmit that beat us
-                # to the lock) gets cancelled too — the newest request from a
-                # given client always wins. Runs from other clients are left be.
-                if (
+                # Re-check each iteration so that even a same-client run which
+                # became "current" while we were already waiting (a resubmit
+                # that beat us to the lock) gets cancelled too — the newest
+                # request from a given client always wins.
+                preempting = (
                     current_cancel is not None
                     and client_id is not None
                     and current_client == client_id
-                ):
+                )
+                if preempting:
                     current_cancel.set()
+            if not preempting:
+                acquired = await asyncio.to_thread(transcribe_lock.acquire, False)
+                if not acquired:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="server busy: another transcription is in progress",
+                    )
+                break
+            if deadline is None:
+                deadline = time.monotonic() + preempt_wait_s
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise HTTPException(
@@ -128,7 +147,7 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
                     detail="server busy: another transcription is in progress",
                 )
             acquired = await asyncio.to_thread(
-                transcribe_lock.acquire, True, min(1.0, remaining)
+                transcribe_lock.acquire, True, min(0.1, remaining)
             )
             if acquired:
                 break

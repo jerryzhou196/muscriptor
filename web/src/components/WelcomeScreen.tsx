@@ -8,9 +8,34 @@ import {
 import clsx from "clsx";
 import { Button } from "./Button";
 import { ConditioningPanel } from "./ConditioningPanel";
-import type { AppError } from "../App";
+import type { AppError, SubmitState } from "../App";
 
 const SERVER_DOWN = "The muscriptor server is temporarily unavailable.";
+
+/** Whole seconds left until `at` (a `Date.now()` timestamp), or null when
+ *  there's nothing to count down to. Re-renders on a sub-second interval so the
+ *  displayed number never sits a beat behind the actual retry. */
+function useCountdown(at: number | null): number | null {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (at === null) return;
+    const id = setInterval(() => tick((n) => n + 1), 250);
+    return () => clearInterval(id);
+  }, [at]);
+  return at === null ? null : Math.max(0, Math.ceil((at - Date.now()) / 1000));
+}
+
+/** Label for the CTA, which doubles as the status readout while an upload is
+ *  waiting to be accepted (see `SubmitState`). */
+function transcribeLabel(submitState: SubmitState, retryIn: number | null): string {
+  if (submitState.phase === "submitting") return "Transcribing…";
+  if (submitState.phase === "busy") {
+    return retryIn === null || retryIn === 0
+      ? "Servers busy, retrying…"
+      : `Servers busy, retrying in ${retryIn}s`;
+  }
+  return "Transcribe";
+}
 
 /**
  * First screen of the two-step flow: pick an audio file, then optionally choose
@@ -25,6 +50,11 @@ export function WelcomeScreen(props: {
   condSelected: Set<string>;
   onCondChange: (next: Set<string>) => void;
   onTranscribe: () => void;
+  /** Where the submitted upload stands; drives the CTA's label + disabled state
+   *  (the screen stays put until the server accepts it). */
+  submitState: SubmitState;
+  /** Stop retrying and re-enable the CTA. */
+  onCancelSubmit: () => void;
   /** True while a file is dragged over the window; swaps the prompt in place. */
   dragging: boolean;
   /** A server-down notice replaces the picker; a file error sits beside it. */
@@ -38,12 +68,16 @@ export function WelcomeScreen(props: {
     condSelected,
     onCondChange,
     onTranscribe,
+    submitState,
+    onCancelSubmit,
     dragging,
     error,
     setError,
   } = props;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [loadingExample, setLoadingExample] = useState(false);
+  const retryIn = useCountdown(submitState.phase === "busy" ? submitState.retryAt : null);
+  const submitting = submitState.phase !== "idle";
 
   // Probe the server on mount. A failure swaps the file picker for a
   // server-down notice; success clears a stale server-down notice so the user
@@ -188,9 +222,26 @@ export function WelcomeScreen(props: {
       {error?.kind !== "server" && selectedFile !== null && (
         <>
           <ConditioningPanel selected={condSelected} onChange={onCondChange} />
-          <div className="flex justify-end">
-            <Button kind="primary" size="text-base" pad="px-9 py-3" onClick={onTranscribe}>
-              Transcribe
+          <div className="flex items-center justify-end gap-5">
+            {submitting && (
+              <Button
+                kind="ghost"
+                className="px-1 py-0.5 text-sm text-muted underline underline-offset-4 hover:bg-transparent enabled:hover:text-content"
+                onClick={onCancelSubmit}
+              >
+                Cancel
+              </Button>
+            )}
+            <Button
+              kind="primary"
+              size="text-base"
+              pad="px-9 py-3"
+              onClick={onTranscribe}
+              disabled={submitting}
+              // The label changes as we wait, so announce it to screen readers.
+              aria-live="polite"
+            >
+              {transcribeLabel(submitState, retryIn)}
             </Button>
           </div>
         </>

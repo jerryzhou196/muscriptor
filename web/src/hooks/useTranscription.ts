@@ -1,5 +1,5 @@
 import { useRef, type Dispatch, type RefObject, type SetStateAction } from "react";
-import { streamTranscribe, TranscribeError } from "../sse";
+import { streamTranscribeWithRetry, TranscribeError } from "../sse";
 import { track } from "../analytics";
 import type { AudioEngine } from "../audio";
 import type { ProgressEstimator } from "../progress";
@@ -50,6 +50,12 @@ export interface TranscriptionDeps {
   /** Called when a (non-superseded) transcription fails, so the UI can recover.
    *  `message` is a user-facing explanation (server-sent when available). */
   onError: (message: string) => void;
+  /** Called once the server has accepted the upload and the event stream is
+   *  opening — the cue to leave the welcome screen for the piano roll. */
+  onAccepted: () => void;
+  /** Called each time the server refuses with 503 because it is busy with
+   *  another transcription, with the wait until the automatic retry. */
+  onBusy: (info: { attempt: number; retryInMs: number }) => void;
   setAppState: (s: AppState) => void;
   /** Detected-instrument names, in first-seen order. */
   setInstruments: Dispatch<SetStateAction<string[]>>;
@@ -77,6 +83,8 @@ export function useTranscription(deps: TranscriptionDeps) {
     getConditioning,
     progress,
     onError,
+    onAccepted,
+    onBusy,
     setAppState,
     setInstruments,
     setMidiUrl,
@@ -183,19 +191,36 @@ export function useTranscription(deps: TranscriptionDeps) {
     // Decode the WAV in parallel with the transcription so it's ready by the
     // time the user hits play.
     audio.loadWav(file).catch(() => {});
-    const startedAt = performance.now();
+    const submittedAt = performance.now();
+    // When the server actually took the job. Stays `submittedAt` unless the
+    // request was queued behind another transcription, so `transcribe_time_s`
+    // measures transcription rather than transcription + time spent retrying.
+    let startedAt = submittedAt;
     let maxEnd = 0;
     let noteCount = 0;
     try {
       const cond = getConditioning();
       const extra = cond.length > 0 ? { instruments: cond } : undefined;
-      for await (const raw of streamTranscribe(
-        "/transcribe",
-        file,
+      for await (const raw of streamTranscribeWithRetry("/transcribe", file, {
         extra,
-        controller.signal,
-        CLIENT_ID,
-      )) {
+        signal: controller.signal,
+        clientId: CLIENT_ID,
+        onAccepted: () => {
+          if (isStale()) return;
+          startedAt = performance.now();
+          onAccepted();
+        },
+        onBusy: ({ attempt, retryInMs }) => {
+          if (isStale()) return;
+          track("transcription_server_busy", {
+            attempt,
+            // How long this upload has been waiting for a free server so far.
+            waited_s: Math.round((performance.now() - submittedAt) / 1000),
+            retry_in_s: Math.round(retryInMs / 1000),
+          });
+          onBusy({ attempt, retryInMs });
+        },
+      })) {
         // A newer upload took over while we were awaiting — drop this event so
         // it can't repopulate the piano roll / re-schedule old notes.
         if (isStale()) return;
