@@ -24,6 +24,9 @@
       <use href="#wave" stroke="black" stroke-width="54" fill="none" stroke-linecap="square"/>
     </mask>
   </defs>
+  <!-- Opaque dark disc: search engines composite favicons onto a white circle,
+       which the white wave strokes disappear into. -->
+  <circle cx="256" cy="256" r="256" fill="#121212"/>
   <g mask="url(#noteClearance)" stroke="#ffffff" stroke-width="16" fill="none">
     <use href="#wave" stroke-linecap="square"/>
     <path mask="url(#waveClearance)" d="M340 288H470"/>
