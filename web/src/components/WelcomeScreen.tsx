@@ -114,11 +114,9 @@ export function WelcomeScreen(props: {
 
   return (
     <main className="mx-auto flex max-w-3xl flex-col gap-4 px-7 pb-12 pt-2 animate-rise [animation-delay:0.06s]">
-      <p className="text-base leading-relaxed text-muted">
-        MuScriptor is the best open model for multi-instrument transcription to
-        date. Give it a recording: pop, classical, metal, jazz, whatever, and
-        it transcribes the notes played by every instrument into
-        MIDI, for you to download or explore interactively.
+      <p className="text-base leading-relaxed text-white">
+        MuScriptor is a free, open-source tool that converts audio to MIDI you can download.
+        
       </p>
       {/* Explicit extensions alongside the wildcard, needed for iOS Safari
        * which sometimes grays out perfectly valid audio files otherwise. */}

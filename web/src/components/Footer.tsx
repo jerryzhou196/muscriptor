@@ -2,8 +2,7 @@ export function Footer() {
   return (
     <footer className="mx-auto mt-4 flex max-w-7xl flex-wrap items-center justify-between gap-6 border-t border-line px-7 py-10 max-[760px]:flex-col max-[760px]:items-start">
       <p className="max-w-md text-muted">
-        MuScriptor is a multi-instrument automatic music transcription model: it
-        turns raw audio into per-instrument MIDI. Built by{" "}
+        Built by{" "}
         <a
           href="https://kyutai.org/"
           target="_blank"
