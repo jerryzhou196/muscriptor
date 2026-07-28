@@ -362,12 +362,14 @@ export function App() {
             className="block h-[clamp(72px,10vw,110px)] w-auto"
             draggable={false}
           />
-          <div className="flex flex-col gap-1">
+          {/* The wordmark doubles as the page's only h1, so the keyword phrase
+              sits in it rather than in a decorative tagline. */}
+          <h1 className="m-0 flex flex-col gap-1 font-normal">
             <span className="text-[clamp(2rem,8vw,3rem)] font-bold leading-none text-white">MuScriptor</span>
             <span className="text-sm text-muted">
-              Audio to MIDI transcription
+              Free audio to MIDI transcription
             </span>
-          </div>
+          </h1>
         </div>
       </header>
 

@@ -3,8 +3,35 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>muscriptor</title>
+    <title>MuScriptor: Free Audio to MIDI Converter</title>
+    <meta
+      name="description"
+      content="Free, open-source audio to MIDI. Upload an mp3/wav/... and MuScriptor transcribes the notes of every instrument into MIDI you can download."
+    />
+    <link rel="canonical" href="https://muscriptor.kyutai.org/" />
     <link rel="icon" type="image/svg+xml" href="/muscriptor-mark-v4.svg" />
+
+    <!-- Social previews. og:image must be a raster in a ~1.91:1 box; SVG and
+         transparency are ignored by most unfurlers. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://muscriptor.kyutai.org/" />
+    <meta property="og:site_name" content="MuScriptor" />
+    <!-- Same strings as <title> and the meta description above: one wording to
+         keep in sync, not three. -->
+    <meta property="og:title" content="MuScriptor: Free Audio to MIDI Converter" />
+    <meta
+      property="og:description"
+      content="Free, open-source audio to MIDI. Upload a mp3/wav/... and MuScriptor transcribes the notes of every instrument into MIDI you can download."
+    />
+    <meta property="og:image" content="https://muscriptor.kyutai.org/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="A MuScriptor piano roll: transcribed notes for several instruments, each in its own colour."
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+
     <!-- Satoshi is self-hosted (same face as kyutai.org), so it works offline;
          font-display: swap lets the fallback stack paint instantly. -->
     <link
@@ -17,6 +44,35 @@
   </head>
   <body data-state="idle">
     <div id="root"></div>
+    <!-- The app is client-rendered, so crawlers that don't run JS (most social
+         unfurlers, some LLM crawlers) would otherwise see an empty page. -->
+    <noscript>
+      <h1>MuScriptor: free audio to MIDI converter</h1>
+      <p>
+        MuScriptor is a free, open-source tool that converts audio to MIDI. Give
+        it a file (mp3, wav...) and it transcribes the notes played by every instrument into MIDI
+        you can download and edit in any DAW. Built by
+        <a href="https://kyutai.org/">Kyutai</a> and
+        <a href="https://www.mirelo.ai/">Mirelo</a>.
+      </p>
+      <p>Enable JavaScript to use the transcriber.</p>
+    </noscript>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "MuScriptor",
+        "url": "https://muscriptor.kyutai.org/",
+        "applicationCategory": "MultimediaApplication",
+        "operatingSystem": "Any (web browser)",
+        "description": "Free, open-source audio to MIDI. Upload an mp3/wav/... and MuScriptor transcribes the notes of every instrument into MIDI you can download.",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+        "author": [
+          { "@type": "Organization", "name": "Kyutai", "url": "https://kyutai.org/" },
+          { "@type": "Organization", "name": "Mirelo", "url": "https://www.mirelo.ai/" }
+        ]
+      }
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
