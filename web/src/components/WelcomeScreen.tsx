@@ -163,20 +163,7 @@ export function WelcomeScreen(props: {
         ) : selectedFile === null ? (
           <div className="flex flex-col items-center gap-4 px-8 py-12 text-center bg-black">
             <h2 className="text-3xl text-white">Convert audio to MIDI</h2>
-            <div
-              className="h-16 w-32 bg-accent"
-              style={{
-                maskImage: "url(/muscriptor-wave.svg)",
-                WebkitMaskImage: "url(/muscriptor-wave.svg)",
-                maskSize: "contain",
-                WebkitMaskSize: "contain",
-                maskRepeat: "no-repeat",
-                WebkitMaskRepeat: "no-repeat",
-                maskPosition: "center",
-                WebkitMaskPosition: "center",
-              }}
-              aria-hidden="true"
-            />
+            <div className="wave-mark h-16 w-32 bg-accent" aria-hidden="true" />
             <p className="m-0 text-base text-muted">
               {dragging ? (
                 <span className="font-semibold text-content">

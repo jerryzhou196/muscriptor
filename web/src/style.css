@@ -137,6 +137,13 @@
   border-radius: 0;
 }
 
+/* The logo waveform, masked so it takes its colour from the element's
+   background (pair with a bg-* utility and a size). */
+@utility wave-mark {
+  -webkit-mask: url("/muscriptor-wave.svg") center / contain no-repeat;
+  mask: url("/muscriptor-wave.svg") center / contain no-repeat;
+}
+
 /* Drop overlay fades in via the body.drag class (set outside React). */
 body.drag .drop-overlay {
   opacity: 1;
