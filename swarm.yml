@@ -47,9 +47,10 @@ services:
     build:
       context: ./
       args:
-        # Enables Google Analytics in the web UI for this deployment only —
-        # builds without the ID (local dev, PyPI) contain no analytics at all.
-        VITE_GA_MEASUREMENT_ID: G-FNB2XC72R7
+        # Set VITE_GA_MEASUREMENT_ID in your environment to enable Google
+        # Analytics in the web UI with your own measurement ID. Unset (the
+        # default) means the build contains no analytics at all.
+        VITE_GA_MEASUREMENT_ID: ${VITE_GA_MEASUREMENT_ID:-}
     command: ["--port", "80"]
     environment:
       - HF_TOKEN=${HF_TOKEN:?HF_TOKEN must be set to pull the private weights}
