@@ -190,6 +190,7 @@ export function OutputBar(props: {
           )}
         </div>
         <Button
+          className="border-white! text-white! enabled:hover:shadow-[0_0_10px_white]"
           onClick={(e) => {
             e.currentTarget.blur();
             onTranscribeAnother();
