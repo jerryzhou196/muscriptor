@@ -707,19 +707,19 @@ class TranscriptionModel:
 
             prompt = None
             if i > 0:
-                open_keys = tracker.open_keys()
-                if overlap > 0:
-                    events = self._overlap_note_events(
-                        prev_tokens, prev_seek, seek, overlap
-                    )
-                    prompt_ids = self._tokenizer.overlap_prompt_token_ids(
-                        open_keys, events, seek
-                    )
-                else:
-                    prompt_ids = self._tokenizer.tie_section_token_ids(open_keys)
-                prompt = torch.tensor(
-                    [prompt_ids], device=self._device, dtype=torch.long
+                prompt_ids = self._forcing_prompt_ids(
+                    tracker.open_keys(),
+                    prev_tokens,
+                    prev_seek,
+                    seek,
+                    overlap,
+                    max_gen_len,
+                    i,
                 )
+                if prompt_ids:
+                    prompt = torch.tensor(
+                        [prompt_ids], device=self._device, dtype=torch.long
+                    )
             yield bnd
 
             if allow_reset and prompt is not None:
@@ -780,6 +780,62 @@ class TranscriptionModel:
             prev_tokens = chunk_tokens
             prev_seek = seek
             yield ProgressEvent(completed=i + 1, total=num_chunks)
+
+    def _forcing_prompt_ids(
+        self,
+        open_keys: list[tuple[int, int]],
+        prev_tokens: list[int],
+        prev_seek: float,
+        seek: float,
+        overlap: float,
+        max_gen_len: int,
+        chunk_index: int,
+    ) -> list[int]:
+        """Build the teacher-forcing prompt for chunk ``chunk_index`` (> 0).
+
+        Overlap forcing replays the previous chunk's note events over the shared
+        window; with ``overlap == 0`` it's just the tie prologue. A runaway
+        previous chunk (no EOS within ``max_gen_len`` — degenerate/repetitive)
+        can make the overlap prompt longer than the generation buffer itself, so
+        the prompt is capped to fit: too long → fall back to the tie prologue
+        alone; still too long → no forcing at all (empty list). ``generate``
+        writes the prompt into a ``max_gen_len + 1`` buffer and needs at least
+        one free slot to decode into, so the cap is ``max_gen_len - 1``. The
+        gzip restart criterion (``allow_reset``) is the quality-side remedy for
+        such chunks; this cap only keeps generation from overflowing.
+        """
+        if overlap > 0:
+            events = self._overlap_note_events(prev_tokens, prev_seek, seek, overlap)
+            prompt_ids = self._tokenizer.overlap_prompt_token_ids(
+                open_keys, events, seek
+            )
+        else:
+            prompt_ids = self._tokenizer.tie_section_token_ids(open_keys)
+
+        max_prompt = max_gen_len - 1
+        if len(prompt_ids) <= max_prompt:
+            return prompt_ids
+
+        tie_only = self._tokenizer.tie_section_token_ids(open_keys)
+        if len(tie_only) <= max_prompt:
+            warnings.warn(
+                f"chunk {chunk_index} (seek={seek:.1f}s): overlap prompt "
+                f"({len(prompt_ids)} tokens) exceeds the generation budget "
+                f"({max_gen_len}); forcing only the tie prologue for this chunk. "
+                "The previous chunk likely ran away without emitting EOS.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return tie_only
+
+        warnings.warn(
+            f"chunk {chunk_index} (seek={seek:.1f}s): tie prologue "
+            f"({len(tie_only)} tokens) exceeds the generation budget "
+            f"({max_gen_len}); generating without forcing for this chunk.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return []
 
     def _collect_chunk(
         self,

@@ -152,6 +152,47 @@ def test_overlap_requires_prelude_forcing(tokenizer):
 
 
 # ---------------------------------------------------------------------------
+# _forcing_prompt_ids: capping a runaway-chunk prompt to the generation budget
+# ---------------------------------------------------------------------------
+
+
+def test_forcing_prompt_keeps_overlap_when_it_fits(tokenizer):
+    model = _bare_model(tokenizer)
+    prev = encode_note_events([_ne(False, 0, 2.6, 1, 60)], _MAX_SHIFT_STEPS)
+    ids = model._forcing_prompt_ids(
+        [(5, 70)], prev, 0.0, 2.5, overlap=2.5, max_gen_len=2000, chunk_index=3
+    )
+    events = model._overlap_note_events(prev, 0.0, 2.5, 2.5)
+    assert ids == tokenizer.overlap_prompt_token_ids([(5, 70)], events, 2.5)
+    assert ids  # no fallback
+
+
+def test_forcing_prompt_caps_runaway_overlap_to_tie_only(tokenizer):
+    model = _bare_model(tokenizer)
+    # A previous chunk that predicted many onsets in the overlap window [2.5, 5)
+    # yields an overlap prompt too long for a tiny generation budget.
+    prev = encode_note_events(
+        [_ne(False, 0, 2.5 + 0.1 * k, 1, 60 + k) for k in range(6)],
+        _MAX_SHIFT_STEPS,
+    )
+    with pytest.warns(RuntimeWarning, match="exceeds the generation budget"):
+        ids = model._forcing_prompt_ids(
+            [], prev, 0.0, 2.5, overlap=2.5, max_gen_len=6, chunk_index=3
+        )
+    assert ids == tokenizer.tie_section_token_ids([])  # fell back to the tie prologue
+
+
+def test_forcing_prompt_drops_forcing_when_even_tie_too_long(tokenizer):
+    model = _bare_model(tokenizer)
+    open_keys = [(p, 60) for p in range(20)]  # 41-token tie prologue
+    with pytest.warns(RuntimeWarning, match="without forcing"):
+        ids = model._forcing_prompt_ids(
+            open_keys, [], 0.0, 2.5, overlap=0.0, max_gen_len=10, chunk_index=3
+        )
+    assert ids == []  # no forcing at all
+
+
+# ---------------------------------------------------------------------------
 # gzip restart criterion
 # ---------------------------------------------------------------------------
 
