@@ -16,7 +16,7 @@ export function DropOverlay() {
         </svg>
         <p className="m-0 text-base text-muted">
           Drop an <strong className="font-semibold text-content">audio file</strong> to
-          transcribe
+          convert it to MIDI
         </p>
       </div>
     </div>
