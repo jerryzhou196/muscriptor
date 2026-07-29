@@ -8,9 +8,10 @@ import { OutputBar } from "./components/OutputBar";
 import { PianoRollCanvas } from "./components/PianoRollCanvas";
 import { InstrumentList } from "./components/InstrumentList";
 import { DropOverlay } from "./components/DropOverlay";
-import { Footer } from "./components/Footer";
+import { Footer, PartnerLogos } from "./components/Footer";
 import { WelcomeScreen } from "./components/WelcomeScreen";
 import { ConsentBanner } from "./components/ConsentBanner";
+import { Faq } from "./components/Faq";
 import { track } from "./analytics";
 
 /**
@@ -365,28 +366,35 @@ export function App() {
             draggable={false}
           />
           <div className="flex flex-col gap-1">
-            <span className="text-[clamp(2rem,8vw,3rem)] font-bold leading-none text-white">MuScriptor</span>
+            <span className="text-[clamp(2.3rem,6vw,3rem)] font-bold leading-none text-white">MuScriptor</span>
             <span className="text-sm text-muted">
               Audio to MIDI transcription
             </span>
           </div>
         </div>
+
+        {/* Also in the footer; here it's decoration, so it goes away on narrow
+            screens rather than wrapping under the wordmark. */}
+        <PartnerLogos className="self-center max-sm:hidden" />
       </header>
 
       {screen === "welcome" ? (
-        <WelcomeScreen
-          selectedFile={selectedFile}
-          onPickFile={pickFile}
-          onUseExample={useExample}
-          condSelected={condSelected}
-          onCondChange={setCondSelected}
-          onTranscribe={startTranscription}
-          submitState={submit}
-          onCancelSubmit={cancelSubmit}
-          dragging={dragging}
-          error={error}
-          setError={setError}
-        />
+        <>
+          <WelcomeScreen
+            selectedFile={selectedFile}
+            onPickFile={pickFile}
+            onUseExample={useExample}
+            condSelected={condSelected}
+            onCondChange={setCondSelected}
+            onTranscribe={startTranscription}
+            submitState={submit}
+            onCancelSubmit={cancelSubmit}
+            dragging={dragging}
+            error={error}
+            setError={setError}
+          />
+          <Faq />
+        </>
       ) : (
         <main className="mx-auto grid max-w-7xl grid-cols-[1fr_300px] gap-4 px-7 pb-12 pt-2 max-[760px]:grid-cols-1">
           {/* Above the roll: exploring the result. */}
