@@ -27,7 +27,10 @@ function useCountdown(at: number | null): number | null {
 
 /** Label for the CTA, which doubles as the status readout while an upload is
  *  waiting to be accepted (see `SubmitState`). */
-function transcribeLabel(submitState: SubmitState, retryIn: number | null): string {
+function transcribeLabel(
+  submitState: SubmitState,
+  retryIn: number | null,
+): string {
   if (submitState.phase === "submitting") return "Transcribing…";
   if (submitState.phase === "busy") {
     return retryIn === null || retryIn === 0
@@ -76,7 +79,9 @@ export function WelcomeScreen(props: {
   } = props;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [loadingExample, setLoadingExample] = useState(false);
-  const retryIn = useCountdown(submitState.phase === "busy" ? submitState.retryAt : null);
+  const retryIn = useCountdown(
+    submitState.phase === "busy" ? submitState.retryAt : null,
+  );
   const submitting = submitState.phase !== "idle";
 
   // Probe the server on mount. A failure swaps the file picker for a
@@ -114,9 +119,10 @@ export function WelcomeScreen(props: {
 
   return (
     <main className="mx-auto flex max-w-3xl flex-col gap-4 px-7 pb-12 pt-2 animate-rise [animation-delay:0.06s]">
-      <p className="text-base leading-relaxed text-white">
-        MuScriptor is a free, open-source tool that converts audio to MIDI you can download.
-        
+      <p className="text-lg leading-relaxed text-muted">
+        MuScriptor is a free, open-source tool that converts audio to MIDI you
+        can download. Give it an mp3/wav/... and it transcribes the notes played
+        by every instrument into MIDI you can edit in any DAW.
       </p>
       {/* Explicit extensions alongside the wildcard, needed for iOS Safari
        * which sometimes grays out perfectly valid audio files otherwise. */}
@@ -136,7 +142,9 @@ export function WelcomeScreen(props: {
       {/* Once a file is picked the card chrome disappears on mobile — the file
           name + button sit directly on the page, like the transcribe screen's
           control rows. bg-none clears the card's gradient layer. */}
+      {/* `data-nosnippet` excludes the element from the Google search snippet */}
       <section
+        data-nosnippet
         className={clsx(
           "card p-0 max-[760px]:border-0",
           error?.kind !== "server" &&
@@ -153,7 +161,8 @@ export function WelcomeScreen(props: {
             <p className="m-0 max-w-md text-base text-muted">{error.message}</p>
           </div>
         ) : selectedFile === null ? (
-          <div className="flex flex-col items-center gap-4 px-8 py-16 text-center">
+          <div className="flex flex-col items-center gap-4 px-8 py-12 text-center bg-black">
+            <h2 className="text-3xl text-white">Convert audio to MIDI</h2>
             <div
               className="h-16 w-32 bg-accent"
               style={{
@@ -170,12 +179,16 @@ export function WelcomeScreen(props: {
             />
             <p className="m-0 text-base text-muted">
               {dragging ? (
-                <span className="font-semibold text-content">Drop anywhere</span>
+                <span className="font-semibold text-content">
+                  Drop anywhere
+                </span>
               ) : (
                 <>
                   Drop an{" "}
-                  <strong className="font-semibold text-content">audio file</strong> here,
-                  or
+                  <strong className="font-semibold text-content">
+                    audio file
+                  </strong>{" "}
+                  here, or
                 </>
               )}
             </p>
