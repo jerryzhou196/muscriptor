@@ -163,7 +163,7 @@ export function InstrumentList(props: {
   const extra = instruments.filter((name) => !given.has(name));
 
   return (
-    <aside className="card col-start-2 self-start px-4 pb-5 pt-4 max-[760px]:col-start-1 animate-rise [animation-delay:0.18s]">
+    <aside className="card px-4 pb-5 pt-4 animate-rise [animation-delay:0.18s]">
       {hasGiven ? (
         <>
           <h2 className="m-0 mb-3 flex items-center text-base font-semibold">

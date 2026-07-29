@@ -5,6 +5,7 @@ import { useAudioEngine } from "./hooks/useAudioEngine";
 import { useTranscription, type AppState } from "./hooks/useTranscription";
 import { Controls } from "./components/Controls";
 import { OutputBar } from "./components/OutputBar";
+import { FeedbackLine } from "./components/FeedbackLine";
 import { PianoRollCanvas } from "./components/PianoRollCanvas";
 import { InstrumentList } from "./components/InstrumentList";
 import { DropOverlay } from "./components/DropOverlay";
@@ -315,7 +316,7 @@ export function App() {
           if (dur > 0) {
             let text = `${formatClock(frac * dur)}/${formatClock(dur)}`;
             const eta = progress.etaMs(now);
-            if (eta != null) text += ` · done in ${formatClock(eta / 1000)}`;
+            if (eta != null) text += `   done in ${formatClock(eta / 1000)}`;
             progressLabelRef.current.textContent = text;
           } else {
             progressLabelRef.current.textContent = "";
@@ -337,7 +338,7 @@ export function App() {
     <>
       <div className="grain" aria-hidden="true" />
 
-      <header className="mx-auto flex max-w-7xl flex-wrap items-end justify-between gap-6 px-7 pb-6 pt-10 max-[760px]:pt-8 animate-rise">
+      <header className="mx-auto flex max-w-7xl flex-wrap items-end justify-between gap-6 px-7 py-4 animate-rise">
         {/* Brand: the v2 mark (transparent PNG) + the wordmark as real text. */}
         <div
           className={clsx(
@@ -425,7 +426,13 @@ export function App() {
 
           <PianoRollCanvas rollRef={rollRef} audio={audio} setUserScrolled={setUserScrolled} />
 
-          <InstrumentList instruments={instruments} given={condSelected} audio={audio} rollRef={rollRef} />
+          {/* Sidebar column: the instrument list, with the feedback line pinned
+              to the bottom of the column so it doesn't move as instruments
+              come in. */}
+          <div className="col-start-2 flex flex-col gap-3 max-[760px]:col-start-1">
+            <InstrumentList instruments={instruments} given={condSelected} audio={audio} rollRef={rollRef} />
+            <FeedbackLine className="mt-auto px-1" />
+          </div>
 
           {/* Below the roll: the transcription job itself — progress, export,
               and starting over. */}
