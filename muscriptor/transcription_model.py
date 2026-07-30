@@ -14,7 +14,6 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-
 from safetensors.torch import load_file
 
 import muscriptor.accelerator
@@ -27,12 +26,11 @@ from muscriptor.events import (
     decode_model_tokens,
 )
 from muscriptor.models.lm import LMModel, TorchAutocast
-from muscriptor.utils.download import download_companion, download_if_necessary
 from muscriptor.modules.conditioners import (
-    MelSpectrogramConditioner,
     ClassConditioner,
-    ConditioningProvider,
     ConditioningAttributes,
+    ConditioningProvider,
+    MelSpectrogramConditioner,
     WavCondition,
 )
 from muscriptor.tokenizer.mt3 import (
@@ -47,6 +45,8 @@ from muscriptor.tokenizer.notes import (
     validate_notes,
 )
 from muscriptor.utils.audio import load_audio, resample
+from muscriptor.utils.beats import BeatGrid, detect_grid
+from muscriptor.utils.download import download_companion, download_if_necessary
 from muscriptor.utils.midi import notes_to_midi
 
 
@@ -83,6 +83,7 @@ def _resolve_source(weights_path: str | Path | None) -> str | Path:
     if isinstance(weights_path, str) and weights_path in _MODEL_SIZES:
         return _HF_REPO_TEMPLATE.format(size=weights_path)
     return weights_path
+
 
 _SAMPLE_RATE = 16000
 # Must match the segment duration used during training / evaluation.
@@ -451,9 +452,7 @@ class TranscriptionModel:
             file=sys.stderr,
         )
 
-    def _resolve_batch_size(
-        self, batch_size: int | None, prelude_forcing: bool
-    ) -> int:
+    def _resolve_batch_size(self, batch_size: int | None, prelude_forcing: bool) -> int:
         """Default the batch size, favouring transcription quality.
 
         Prelude forcing needs chunks generated strictly in order, so while it
@@ -620,8 +619,10 @@ class TranscriptionModel:
         no_eos_is_ok: bool = True,
         beam_size: int = 1,
         prelude_forcing: bool = True,
+        detect_tempo: bool = True,
     ) -> bytes:
         """Same as :meth:`transcribe` but returns a MIDI file as bytes."""
+        beat_grid = self.detect_beat_grid_for(audio) if detect_tempo else None
         events = self.transcribe(
             audio,
             use_sampling=use_sampling,
@@ -633,10 +634,22 @@ class TranscriptionModel:
             beam_size=beam_size,
             prelude_forcing=prelude_forcing,
         )
-        return self.events_to_midi_bytes(events)
+        return self.events_to_midi_bytes(events, beat_grid=beat_grid)
+
+    def detect_beat_grid_for(
+        self, audio: str | Path | tuple[torch.Tensor, int]
+    ) -> BeatGrid | None:
+        """Detect the beat grid of `audio`, or None if there isn't a usable one.
+
+        Accepts the same input forms as :meth:`transcribe`.
+        """
+        tensor, sample_rate = audio if isinstance(audio, tuple) else (audio, None)
+        return detect_grid(self._load_wav(tensor, sample_rate), _SAMPLE_RATE)
 
     def events_to_midi_bytes(
-        self, events: Iterator[NoteStartEvent | NoteEndEvent | ProgressEvent]
+        self,
+        events: Iterator[NoteStartEvent | NoteEndEvent | ProgressEvent],
+        beat_grid: BeatGrid | None = None,
     ) -> bytes:
         """Reassemble Notes from a NoteStart/NoteEnd stream and serialize MIDI.
 
@@ -674,7 +687,7 @@ class TranscriptionModel:
         # don't drift from earlier reference outputs.
         notes = validate_notes(notes, fix=True)
         notes = trim_overlapping_notes(notes, sort=True)
-        midi = notes_to_midi(notes, program_names=program_names)
+        midi = notes_to_midi(notes, program_names=program_names, beat_grid=beat_grid)
         buf = io.BytesIO()
         midi.save(file=buf)
         return buf.getvalue()

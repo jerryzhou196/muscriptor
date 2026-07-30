@@ -9,6 +9,8 @@ from dataclasses import dataclass
 
 from mido import Message, MetaMessage, MidiFile, MidiTrack, second2tick
 
+from muscriptor.utils.beats import BAR_OFFSET_MARKER
+
 DRUM_PROGRAM = 128
 MINIMUM_NOTE_DURATION_SEC = 0.01
 
@@ -263,6 +265,8 @@ def note_event2midi(
     ticks_per_beat: int = 480,
     tempo: int = 500000,
     program_names: dict[int, str] | None = None,
+    beats_per_bar: int | None = None,
+    offset_s: float = 0.0,
 ) -> MidiFile:
     """Convert NoteEvent list to a type-1 (multi-track) MIDI file.
 
@@ -274,10 +278,23 @@ def note_event2midi(
 
     `program_names` maps a program number (DRUM_PROGRAM for drums) to the
     track name; unmapped programs fall back to "program <n>" / "drums".
+
+    `beats_per_bar` writes a time signature (denominator 4).
+    `offset_s` delays every event so bar lines land on real downbeats.
     """
     midi = MidiFile(ticks_per_beat=ticks_per_beat, type=1)
     meta_track = MidiTrack()
     meta_track.append(MetaMessage("set_tempo", tempo=tempo, time=0))
+    if beats_per_bar is not None:
+        meta_track.append(
+            MetaMessage(
+                "time_signature", numerator=beats_per_bar, denominator=4, time=0
+            )
+        )
+    if offset_s:
+        meta_track.append(
+            MetaMessage("marker", text=f"{BAR_OFFSET_MARKER}{offset_s:.4f}", time=0)
+        )
     midi.tracks.append(meta_track)
 
     drum_offset_events = []
@@ -302,7 +319,7 @@ def note_event2midi(
     track_ticks: dict[int, int] = {}
     current_tick = 0
     for ne in note_events:
-        absolute_tick = round(second2tick(ne.time, ticks_per_beat, tempo))
+        absolute_tick = round(second2tick(ne.time + offset_s, ticks_per_beat, tempo))
         if absolute_tick < current_tick:
             raise ValueError(
                 f"at ne.time {ne.time}, absolute_tick {absolute_tick} < current_tick {current_tick}"

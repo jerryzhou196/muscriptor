@@ -255,7 +255,10 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
                 # with the bytes base64-encoded.
                 if cancel.is_set():
                     return
-                midi_bytes = model.events_to_midi_bytes(iter(events))
+                # Detect tempo/meter only now: it costs a few seconds of CPU and
+                # nothing before this point needs it, so the notes stream first.
+                grid = model.detect_beat_grid_for((wav, sr))
+                midi_bytes = model.events_to_midi_bytes(iter(events), beat_grid=grid)
                 midi_b64 = base64.b64encode(midi_bytes).decode("ascii")
                 payload = json.dumps({"type": "midi", "data": midi_b64})
                 yield f"data: {payload}\n\n"

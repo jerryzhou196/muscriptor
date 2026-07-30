@@ -196,6 +196,17 @@ def transcribe(
             ),
         ),
     ] = None,
+    detect_tempo: Annotated[
+        bool,
+        typer.Option(
+            "--detect-tempo/--no-detect-tempo",
+            help=(
+                "Detect the tempo and time signature from the audio and write "
+                "them into the MIDI. When no steady tempo or clear meter is "
+                "found, a placeholder 120 BPM with no time signature is used."
+            ),
+        ),
+    ] = True,
 ) -> None:
     """Transcribe an audio file to MIDI."""
     instrument_names: list[str] | None = None
@@ -261,7 +272,7 @@ def transcribe(
     )
 
     if format == OutputFormat.midi:
-        midi_bytes = model.transcribe_to_midi(**kwargs)
+        midi_bytes = model.transcribe_to_midi(**kwargs, detect_tempo=detect_tempo)
         if is_stdout:
             sys.stdout.buffer.write(midi_bytes)
             sys.stdout.buffer.flush()
@@ -307,9 +318,7 @@ def transcribe(
             typer.echo(f"Saved JSONL to {output}", err=True)
     else:  # json
         events = [
-            e
-            for e in model.transcribe(**kwargs)
-            if not isinstance(e, ProgressEvent)
+            e for e in model.transcribe(**kwargs) if not isinstance(e, ProgressEvent)
         ]
         payload = json.dumps([_event_to_dict(e) for e in events], indent=2)
         if is_stdout:
