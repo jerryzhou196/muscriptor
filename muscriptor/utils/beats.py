@@ -2,6 +2,7 @@
 
 import logging
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 import torch
@@ -21,6 +22,16 @@ MIN_BEATS = 8
 # Marker text prefix recording how far notes were delayed to align bar lines,
 # so `/auralize` can line the synthesis back up with the original audio.
 BAR_OFFSET_MARKER = "muscriptor:bar_offset="
+
+
+class BeatDetectionError(RuntimeError):
+    """No usable beat grid in the audio (too short, or no constant tempo)."""
+
+
+# What to do when the tempo can't be detected: True raises, False doesn't even
+# try (the escape hatch for songs the detector gets wrong), and "best-effort"
+# warns and falls back to the placeholder tempo.
+TempoDetection = bool | Literal["best-effort"]
 
 
 def read_bar_offset(midi) -> float:
@@ -106,12 +117,9 @@ def infer_beats_per_bar(
 
 
 def detect_grid(
-    wav: torch.Tensor,
-    sr: int,
-    checkpoint: str = "final0",
-    device: str = "cpu",
-) -> BeatGrid | None:
-    """Detect a constant-tempo beat grid, or None if there isn't a usable one.
+    wav: torch.Tensor, sr: int, checkpoint: str = "final0", device: str = "cpu"
+) -> BeatGrid:
+    """Detect a constant-tempo beat grid.
 
     Args:
         wav: Audio as [C, T] (this repo's convention), float32.
@@ -121,44 +129,42 @@ def detect_grid(
             the bar offset by a beat or two.
         device: Torch device for the beat model.
 
-    Returns None when the audio is too short, the beats do not fit a constant
-    tempo, or the meter is unclear. A None meter with a usable tempo still
-    returns a BeatGrid — tempo alone is worth writing.
+    Raises BeatDetectionError when the audio is too short or the beats do not
+    fit a constant tempo. An unclear meter is not fatal: the BeatGrid comes back
+    with beats_per_bar=None, since tempo alone is worth writing.
     """
     # Imported here, not at module scope: beat_this pulls in torchaudio and soxr,
     # which would slow every CLI invocation that never transcribes anything.
     from beat_this.inference import Audio2Beats
 
-    signal = wav.mean(dim=0).detach().cpu().numpy()  # beat_this wants mono, 1-D
-    try:
-        # Returns (beats, downbeats) despite beat_this's own File2File unpacking
-        # them the other way round.
-        beats, downbeats = Audio2Beats(
-            checkpoint_path=checkpoint, device=device, dbn=False
-        )(signal, sr)
-    except Exception:  # detection is best-effort
-        logger.warning(
-            "beat detection failed; falling back to the placeholder tempo",
-            exc_info=True,
+    # This triggers an error in beat_this so report as BeatDetectionError directly
+    min_duration_s = 1.0
+    if wav.shape[-1] < min_duration_s * sr:
+        raise BeatDetectionError(
+            f"Audio is {wav.shape[-1] / sr:.2f}s long, too short to detect a tempo"
         )
-        return None
+
+    signal = wav.mean(dim=0).detach().cpu().numpy()  # beat_this wants mono, 1-D
+    # Returns (beats, downbeats) despite beat_this's own File2File unpacking
+    # them the other way round.
+    beats, downbeats = Audio2Beats(
+        checkpoint_path=checkpoint, device=device, dbn=False
+    )(signal, sr)
 
     beats = np.asarray(beats, dtype=float)
     downbeats = np.asarray(downbeats, dtype=float)
     if len(beats) < MIN_BEATS:
-        logger.info("only %d beats detected; skipping tempo detection", len(beats))
-        return None
+        raise BeatDetectionError(
+            f"Only {len(beats)} beats detected, need at least {MIN_BEATS}"
+        )
 
     bpm, residual = fit_tempo(beats)
     beat_seconds = 60.0 / bpm
     if residual > MAX_TEMPO_RESIDUAL * beat_seconds:
-        logger.info(
-            "beats deviate %.0f ms RMS from a constant %.1f BPM; "
-            "skipping tempo detection",
-            residual * 1000,
-            bpm,
+        raise BeatDetectionError(
+            f"The recording has no fixed tempo (beats deviate {residual * 1000:.0f} ms "
+            f"RMS from a constant {bpm:.1f} BPM)"
         )
-        return None
 
     beats_per_bar = infer_beats_per_bar(beats, downbeats)
     first_downbeat = float(downbeats[0]) if len(downbeats) else float(beats[0])

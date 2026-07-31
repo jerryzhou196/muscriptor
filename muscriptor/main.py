@@ -5,7 +5,7 @@ import json
 import sys
 from enum import Enum
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import typer
 
@@ -15,6 +15,7 @@ from muscriptor.tokenizer.mt3 import (
     resolve_instrument_names,
 )
 from muscriptor.transcription_model import TranscriptionModel
+from muscriptor.utils.beats import BeatDetectionError, TempoDetection
 from muscriptor.utils.download import ModelDownloadError
 
 app = typer.Typer(add_completion=False, help="muscriptor — audio-to-MIDI transcription")
@@ -196,17 +197,19 @@ def transcribe(
             ),
         ),
     ] = None,
+    # typer can't take the bool | Literal["best-effort"] union the API uses, so
+    # the CLI spells all three states as strings and converts below.
     detect_tempo: Annotated[
-        bool,
+        Literal["true", "false", "best-effort"],
         typer.Option(
-            "--detect-tempo/--no-detect-tempo",
             help=(
                 "Detect the tempo and time signature from the audio and write "
-                "them into the MIDI. When no steady tempo or clear meter is "
-                "found, a placeholder 120 BPM with no time signature is used."
+                "them into the MIDI. 'true' fails if no steady tempo is found, "
+                "'best-effort' warns and uses a placeholder 120 BPM with no "
+                "time signature, 'false' skips detection altogether."
             ),
         ),
-    ] = True,
+    ] = "best-effort",
 ) -> None:
     """Transcribe an audio file to MIDI."""
     instrument_names: list[str] | None = None
@@ -272,7 +275,19 @@ def transcribe(
     )
 
     if format == OutputFormat.midi:
-        midi_bytes = model.transcribe_to_midi(**kwargs, detect_tempo=detect_tempo)
+        try:
+            mode: TempoDetection = {
+                "true": True,
+                "false": False,
+                "best-effort": "best-effort",
+            }[detect_tempo]
+            midi_bytes = model.transcribe_to_midi(**kwargs, detect_tempo=mode)
+        except BeatDetectionError as e:
+            typer.echo(f"Error: {e}", err=True)
+            typer.echo(
+                "Pass --detect-tempo best-effort or false to continue.", err=True
+            )
+            raise typer.Exit(1)
         if is_stdout:
             sys.stdout.buffer.write(midi_bytes)
             sys.stdout.buffer.flush()

@@ -36,6 +36,7 @@ from muscriptor.soundfonts import SF3_URL
 from muscriptor.tokenizer.mt3 import MT3_FULL_PLUS_GROUP_NAMES
 from muscriptor.transcription_model import TranscriptionModel
 from muscriptor.utils.audio import _read_non_wav_file, _read_wav_file
+from muscriptor.utils.beats import BeatDetectionError, TempoDetection
 from muscriptor.utils.download import download_if_necessary
 
 
@@ -179,6 +180,8 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
     async def transcribe(
         file: Annotated[UploadFile, File()],
         instruments: Annotated[list[str], Form(default_factory=list)],
+        # "true" fails loudly on tempo detection errors, "false" doesn't even try
+        detect_tempo: Annotated[TempoDetection, Form()] = "best-effort",
         x_client_id: Annotated[str | None, Header()] = None,
     ) -> StreamingResponse:
         data = await file.read()
@@ -257,7 +260,7 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
                     return
                 # Detect tempo/meter only now: it costs a few seconds of CPU and
                 # nothing before this point needs it, so the notes stream first.
-                grid = model.detect_beat_grid_for((wav, sr))
+                grid = model.detect_beat_grid_for((wav, sr), detect_tempo)
                 midi_bytes = model.events_to_midi_bytes(iter(events), beat_grid=grid)
                 midi_b64 = base64.b64encode(midi_bytes).decode("ascii")
                 payload = json.dumps({"type": "midi", "data": midi_b64})
@@ -276,6 +279,8 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
     async def transcribe_midi(
         file: Annotated[UploadFile, File()],
         instruments: Annotated[list[str], Form(default_factory=list)],
+        # "true" fails loudly on tempo detection errors, "false" doesn't even try
+        detect_tempo: Annotated[TempoDetection, Form()] = "best-effort",
         x_client_id: Annotated[str | None, Header()] = None,
     ) -> Response:
         """Transcribe an audio file and return the .mid file directly.
@@ -328,7 +333,12 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
                 model.transcribe_to_midi,
                 (wav, sr),
                 instruments=instruments or None,
+                detect_tempo=detect_tempo,
             )
+        except BeatDetectionError as e:
+            # Only reachable with detect_tempo=true, where the caller wants an error
+            # if tempo detection fails.
+            raise HTTPException(status_code=422, detail=str(e)) from e
         finally:
             release_lock()
 

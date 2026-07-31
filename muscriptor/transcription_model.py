@@ -45,7 +45,12 @@ from muscriptor.tokenizer.notes import (
     validate_notes,
 )
 from muscriptor.utils.audio import load_audio, resample
-from muscriptor.utils.beats import BeatGrid, detect_grid
+from muscriptor.utils.beats import (
+    BeatDetectionError,
+    BeatGrid,
+    TempoDetection,
+    detect_grid,
+)
 from muscriptor.utils.download import download_companion, download_if_necessary
 from muscriptor.utils.midi import notes_to_midi
 
@@ -619,10 +624,10 @@ class TranscriptionModel:
         no_eos_is_ok: bool = True,
         beam_size: int = 1,
         prelude_forcing: bool = True,
-        detect_tempo: bool = True,
+        detect_tempo: TempoDetection = "best-effort",
     ) -> bytes:
         """Same as :meth:`transcribe` but returns a MIDI file as bytes."""
-        beat_grid = self.detect_beat_grid_for(audio) if detect_tempo else None
+        beat_grid = self.detect_beat_grid_for(audio, detect_tempo)
         events = self.transcribe(
             audio,
             use_sampling=use_sampling,
@@ -637,14 +642,30 @@ class TranscriptionModel:
         return self.events_to_midi_bytes(events, beat_grid=beat_grid)
 
     def detect_beat_grid_for(
-        self, audio: str | Path | tuple[torch.Tensor, int]
+        self,
+        audio: str | Path | tuple[torch.Tensor, int],
+        mode: TempoDetection = "best-effort",
     ) -> BeatGrid | None:
         """Detect the beat grid of `audio`, or None if there isn't a usable one.
 
         Accepts the same input forms as :meth:`transcribe`.
+        `mode` decides what a failed detection means: raise (True), skip detection
+        entirely (False), or warn and fall back to the placeholder tempo
+        ("best-effort").
         """
+        if mode is False:
+            return None
         tensor, sample_rate = audio if isinstance(audio, tuple) else (audio, None)
-        return detect_grid(self._load_wav(tensor, sample_rate), _SAMPLE_RATE)
+        try:
+            return detect_grid(self._load_wav(tensor, sample_rate), _SAMPLE_RATE)
+        except BeatDetectionError as e:
+            if mode is True:
+                raise
+            print(
+                f"Warning: {e}; falling back to the placeholder tempo",
+                file=sys.stderr,
+            )
+            return None
 
     def events_to_midi_bytes(
         self,
