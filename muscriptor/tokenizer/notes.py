@@ -292,6 +292,8 @@ def note_event2midi(
             )
         )
     if offset_s:
+        # Doesn't do anything for the MIDI but we just mark "we had to shift by this
+        # much to align the bars". Read by /auralize later
         meta_track.append(
             MetaMessage("marker", text=f"{BAR_OFFSET_MARKER}{offset_s:.4f}", time=0)
         )
