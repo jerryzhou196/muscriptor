@@ -15,9 +15,11 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
+from mido import MidiFile
 
 from muscriptor.soundfonts import SF2_URL
 from muscriptor.utils.audio import load_audio
+from muscriptor.utils.beats import read_bar_offset
 from muscriptor.utils.download import download_if_necessary
 
 # Pre-downloaded copy at the repo root (kept for checkouts and Docker images
@@ -62,10 +64,14 @@ def _synthesize_midi(midi_path: Path, soundfont_path: Path) -> np.ndarray:
         # output file written).
         result = subprocess.run(
             [
-                "fluidsynth", "-ni",
-                "-F", synth_tmp,
-                "-r", str(_SAMPLE_RATE),
-                str(soundfont_path), str(midi_path),
+                "fluidsynth",
+                "-ni",
+                "-F",
+                synth_tmp,
+                "-r",
+                str(_SAMPLE_RATE),
+                str(soundfont_path),
+                str(midi_path),
             ],
             capture_output=True,
         )
@@ -134,23 +140,29 @@ def auralize(
     output_path = Path(output_path)
     soundfont = _resolve_soundfont(soundfont_path)
 
-    # 1. Synthesize MIDI via FluidSynth
+    # Synthesize MIDI via FluidSynth
     synth_audio = _synthesize_midi(Path(midi_path), soundfont)
 
-    # 2. Load original audio at 44100 Hz mono
+    # Undo any bar-alignment delay, which exists to put bar lines on
+    # downbeats and would otherwise offset the synthesis against the original.
+    bar_offset = read_bar_offset(MidiFile(str(midi_path)))
+    if bar_offset:
+        synth_audio = synth_audio[round(bar_offset * _SAMPLE_RATE) :]
+
+    # Load original audio at 44100 Hz mono
     original_audio = _load_mono_44k(original_audio_path)
 
-    # 3. Pad both to the same length
+    # Pad both to the same length
     length = max(len(original_audio), len(synth_audio))
     original_audio = np.pad(original_audio, (0, length - len(original_audio)))
     synth_audio = np.pad(synth_audio, (0, length - len(synth_audio)))
 
-    # 4. RMS-normalize synthesis to match the original's loudness
-    rms_orig = np.sqrt(np.mean(original_audio ** 2))
-    rms_synth = np.sqrt(np.mean(synth_audio ** 2))
+    # RMS-normalize synthesis to match the original's loudness
+    rms_orig = np.sqrt(np.mean(original_audio**2))
+    rms_synth = np.sqrt(np.mean(synth_audio**2))
     if rms_synth > 1e-8:
         synth_audio = synth_audio * (rms_orig / rms_synth)
 
-    # 5. Assemble stereo array [T, 2] and write WAV
+    # Assemble stereo array [T, 2] and write WAV
     stereo = np.stack([original_audio, synth_audio], axis=1)
     sf.write(str(output_path), stereo, _SAMPLE_RATE)

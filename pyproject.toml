@@ -42,6 +42,7 @@ dependencies = [
     "httpx>=0.28.1",
     "python-multipart>=0.0.29",
     "soundfile>=0.14.0",
+    "beat-this>=1.1",  # Tempo and downbeat tracking
 ]
 
 [project.urls]
@@ -64,4 +65,8 @@ packages = ["muscriptor"]
 dev = [
     "pre-commit>=4.3.0",
     "pytest>=9.0.3",
+]
+notebooks = [
+    "plotly>=5.20",
+    "jupyterlab>=4.0",
 ]

@@ -14,6 +14,7 @@ import torch
 
 from muscriptor.events import ChunkBoundary, ProgressEvent
 from muscriptor.transcription_model import TranscriptionModel
+from muscriptor.utils.beats import BeatDetectionError
 
 EOS = 99
 
@@ -168,3 +169,30 @@ def test_missing_eos_warns_and_still_emits_when_allowed():
         21,
         ProgressEvent(completed=2, total=2),
     ]
+
+
+# ---------------------------------------------------------------------------
+# Tempo detection modes
+# ---------------------------------------------------------------------------
+
+
+class _FakeAudio:
+    """Just enough of a model for detect_beat_grid_for's mode dispatch."""
+
+    _load_wav = staticmethod(lambda tensor, sr: tensor)
+    detect_beat_grid_for = TranscriptionModel.detect_beat_grid_for
+
+
+def test_detect_tempo_modes(monkeypatch):
+    def boom(*args, **kwargs):
+        raise BeatDetectionError("no fixed tempo")
+
+    monkeypatch.setattr("muscriptor.transcription_model.detect_grid", boom)
+    model = _FakeAudio()
+    # false: never even calls the detector.
+    assert model.detect_beat_grid_for((None, None), False) is None
+    # best-effort: swallows the failure, no grid written.
+    assert model.detect_beat_grid_for((None, None), "best-effort") is None
+    # true: the caller wanted to know.
+    with pytest.raises(BeatDetectionError):
+        model.detect_beat_grid_for((None, None), True)
