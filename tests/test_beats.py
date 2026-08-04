@@ -4,6 +4,8 @@ All synthetic: the maths is exercised without beat_this or a checkpoint, since
 only detect_grid touches the model.
 """
 
+import dataclasses
+
 import numpy as np
 
 from muscriptor.utils.beats import (
@@ -199,29 +201,27 @@ def test_estimate_onset_delay_survives_beat_quantization():
     assert abs(measured.seconds - 0.010) < 0.003
 
 
-def test_aligned_to_onsets_moves_the_downbeat_onto_the_notes():
+def test_with_onset_delay_measures_how_late_the_notes_are():
     beats = _beats(126.0, start=0.4)
     grid = BeatGrid(bpm=126.0, beats_per_bar=4, first_downbeat=0.4, beats=beats)
-    aligned = grid.aligned_to_onsets(_onsets(beats, delay=0.012))
-    assert abs(aligned.first_downbeat - (0.4 + 0.012)) < 0.001
-    # A phase shift only: same tempo, same meter, same beats to measure against.
-    assert (aligned.bpm, aligned.beats_per_bar) == (grid.bpm, grid.beats_per_bar)
-    assert aligned.beats is grid.beats
-    # The notes end up on the bar line rather than just after it.
-    assert abs(aligned.bar_offset() - (grid.bar_offset() - 0.012)) < 0.001
+    measured = grid.with_onset_delay(_onsets(beats, delay=0.012))
+    assert abs(measured.onset_delay - 0.012) < 0.001
+    # Only the lag is filled in; the grid itself is left exactly as detected.
+    assert measured == dataclasses.replace(grid, onset_delay=measured.onset_delay)
 
 
-def test_aligned_to_onsets_is_a_no_op_without_tracked_beats():
+def test_with_onset_delay_is_zero_without_tracked_beats():
     """A hand-built grid carries no beats, so there is nothing to measure."""
     grid = BeatGrid(bpm=120.0, beats_per_bar=4, first_downbeat=1.0)
-    assert grid.aligned_to_onsets(_onsets(_beats(120.0), delay=0.02)) is grid
+    assert grid.with_onset_delay(_onsets(_beats(120.0), delay=0.02)).onset_delay == 0.0
 
 
-def test_aligned_to_onsets_is_a_no_op_without_usable_onsets():
+def test_with_onset_delay_is_zero_without_usable_onsets():
+    """Measured and found nothing is 0.0, not None — it won't be measured again."""
     beats = _beats(120.0)
     grid = BeatGrid(bpm=120.0, beats_per_bar=4, first_downbeat=1.0, beats=beats)
-    assert grid.aligned_to_onsets([]) is grid
-    assert grid.aligned_to_onsets([0.5, 1.0, 1.5]) is grid
+    assert grid.with_onset_delay([]).onset_delay == 0.0
+    assert grid.with_onset_delay([0.5, 1.0, 1.5]).onset_delay == 0.0
 
 
 class _FakeMidi:

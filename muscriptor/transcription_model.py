@@ -366,6 +366,11 @@ class TranscriptionModel:
         ``prelude_forcing=False`` explicitly to trade chunk-boundary quality
         for batched throughput.
 
+        The event times may all carry the same small lag (up to ~25 ms) due to model
+        bias. Taking it out needs the beat grid and every onset in the transcription,
+        which only exist once the stream has finished, so prefer
+        :meth:`transcribe_to_midi` when precise note timing matters.
+
         Interleaved with the note events are coarse :class:`ProgressEvent`
         anchors (``completed`` of ``total`` chunks): one up front with
         ``completed == 0``, then one as each chunk finishes. Consumers that
@@ -654,8 +659,7 @@ class TranscriptionModel:
         ("best-effort").
 
         The grid carries the tracked beat times along, so that writing the MIDI
-        can move it onto the transcription's own onsets (see
-        BeatGrid.aligned_to_onsets).
+        can move the transcription's onsets onto them (see BeatGrid.onset_delay).
         """
         if mode is False:
             return None

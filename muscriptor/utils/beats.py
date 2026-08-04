@@ -2,6 +2,7 @@
 
 import dataclasses
 import logging
+import math
 from collections.abc import Sequence
 from typing import Literal
 
@@ -33,18 +34,17 @@ ONSET_SUBDIVISIONS = (1, 2, 3, 4, 6, 8, 12, 16, 24)
 # are above 0.5
 MIN_ONSET_CONCENTRATION = 0.5
 
-# |R| for n random angles is about 1/sqrt(n), so fewer onset times than this can
-# clear the floor above by chance. Roughly a bar's worth of eighth notes per
-# second of audio, i.e. a few seconds of dense music or a good deal more of
-# sparse music.
-MIN_ONSETS = 100
+# |R| for n random angles is about 1/sqrt(n). With MIN_ONSETS = 40 the chance of 
+# passing the bar with a random distribution is about 1 in 5,000.
+MIN_ONSETS = 40
 
 # The largest delay this is meant to correct.
 # Trade-off: we want to correct larger offsets if they happen, but a smaller value
 # allows us to use smaller grids like 1/16th notes (depends also on the tempo).
-# This is because if a grid has 20ms, we can't distinguish between a +15ms and -ms
-# offset since things are cyclical, unless we have a max offset of <15ms
-MAX_ONSET_DELAY_S = 0.025
+# This is because if a grid has 20ms, we can't distinguish between a +15ms and -5ms
+# offset since things are cyclical, unless we have a max offset of <15ms.
+# With 0.04 we can do 16th notes up to 187 BPM.
+MAX_ONSET_DELAY_S = 0.04
 
 # Note onset times in seconds, however the caller happens to hold them.
 Onsets = Sequence[float] | np.ndarray
@@ -82,13 +82,17 @@ class BeatGrid:
     # Time of the first detected bar line, in seconds.
     first_downbeat: float
     # The individual beat times the grid was fitted to, kept for
-    # `aligned_to_onsets`, which needs them rather than the fitted tempo: the
+    # `with_onset_delay`, which needs them rather than the fitted tempo: the
     # tracked beats follow the recording's small tempo wobbles, and those are the
     # same size as the offset being measured. None for a hand-built grid; kept
     # out of equality and repr, being an array and an implementation detail.
     beats: np.ndarray | None = dataclasses.field(
         default=None, repr=False, compare=False
     )
+    # Seconds by which the transcribed onsets are late against these beats, or None
+    # until some notes have been measured against the grid (see `with_onset_delay`).
+    # Whoever writes the notes out subtracts it from them.
+    onset_delay: float | None = None
 
     @property
     def bar_seconds(self) -> float | None:
@@ -96,44 +100,54 @@ class BeatGrid:
             return None
         return self.beats_per_bar * 60.0 / self.bpm
 
-    def bar_offset(self) -> float:
+    def bar_offset(self, min_shift: float = 0.0) -> float:
         """Seconds to delay every note so bar lines land on downbeats.
 
         MIDI has no pickup measure: bar 1 starts at tick 0, so the only way to
         put a bar line on the first downbeat is to shift the music later. Always
         a forward shift, keeping ticks non-negative and dropping no notes; the
         leading partial bar holds whatever preceded the first downbeat.
-        """
-        bar = self.bar_seconds
-        if bar is None:
-            return 0.0
-        return (bar - self.first_downbeat % bar) % bar
 
-    def aligned_to_onsets(self, onsets: Onsets) -> "BeatGrid":
-        """This grid moved onto `onsets`, so bar lines land on the notes.
-
-        This is to correct for the fact that we observed that the detected onsets don't
-        always align well with the beats.
-        See estimate_onset_delay() for details.
+        Whole bars are added until the shift reaches `min_shift`, so a caller
+        that moved the notes earlier (by `onset_delay`) still gets non-negative
+        ticks without having to squash the notes near the start.
         """
-        if self.beats is None:
-            return self
-        measured = estimate_onset_delay(onsets, self)
+        step = self.bar_seconds
+        if step is None:
+            # No meter to align to, so the only reason to shift is the headroom;
+            # do it in whole beats, which are all this grid has.
+            step, offset = 60.0 / self.bpm, 0.0
+        else:
+            offset = (step - self.first_downbeat % step) % step
+        if offset < min_shift:
+            offset += step * math.ceil((min_shift - offset) / step)
+        return offset
+
+    def with_onset_delay(self, onsets: Onsets) -> "BeatGrid":
+        """This grid with `onsets`' lag against it measured and filled in.
+
+        Subtracting that lag from the note times moves them onto the beats. We
+        trust the beats tracked by beat_this over the transcription - they're a bit
+        more accurate based on our measurements. 0.0 when there is nothing to
+        measure from; see estimate_onset_delay() for details.
+
+        Measuring once and carrying the answer around is what keeps the MIDI file
+        and the UI (which is told the same number) shifting by the same amount.
+        """
+        measured = None
+        if self.beats is not None:
+            measured = estimate_onset_delay(onsets, self)
         if measured is None:
-            return self
+            return dataclasses.replace(self, onset_delay=0.0)
         logger.info(
             "onsets sit %+.1f ms off a 1/%d-beat grid (|R| = %.2f over %d "
-            "onsets); moving the downbeat from %.3fs to %.3fs",
+            "onsets); moving the notes back by that much",
             1000 * measured.seconds,
             measured.subdivision,
             measured.concentration,
             measured.n_onsets,
-            self.first_downbeat,
-            self.first_downbeat + measured.seconds,
         )
-        return dataclasses.replace(
-            self, first_downbeat=self.first_downbeat + measured.seconds
-        )
+        return dataclasses.replace(self, onset_delay=measured.seconds)
 
 
 @dataclasses.dataclass(frozen=True)

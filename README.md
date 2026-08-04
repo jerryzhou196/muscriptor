@@ -231,6 +231,12 @@ class TranscriptionModel:
             plus a tiny duration. Note: this tokenizer does not preserve
             velocity (loudness) — only onset/offset timing, pitch, and
             instrument are recovered.
+
+            Event times may all carry the same small lag (up to ~25 ms).
+            Correcting it needs the beat grid and the whole transcription's
+            onsets, which are only available once the stream has finished, so
+            prefer `transcribe_to_midi` when precise note timing matters — it
+            measures the lag and takes it out.
         """
 
     def transcribe_to_midi(

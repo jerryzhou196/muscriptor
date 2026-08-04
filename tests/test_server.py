@@ -11,6 +11,7 @@ import wave
 from pathlib import Path
 from unittest.mock import create_autospec
 
+import numpy as np
 from fastapi.testclient import TestClient
 
 from muscriptor.events import NoteEndEvent, NoteStartEvent, ProgressEvent
@@ -113,7 +114,7 @@ def test_transcribe_streams_sse_events(tmp_path):
     # Note events, then a trailing base64-encoded MIDI event.
     assert parsed[:-1] == [event_to_dict(e) for e in events]
     assert parsed[-1] == {
-        "type": "midi",
+        "type": "finished",
         "data": base64.b64encode(FAKE_MIDI).decode("ascii"),
         "beat_grid": None,
     }
@@ -124,7 +125,11 @@ def test_transcribe_sends_beat_grid(tmp_path):
     """The detected grid rides along with the final MIDI event, for the UI's bar lines."""
     model = make_model()
     model.detect_beat_grid_for.return_value = BeatGrid(
-        bpm=123.5, beats_per_bar=4, first_downbeat=0.75
+        # A real detected grid carries `beats`, which must not reach the JSON.
+        bpm=123.5,
+        beats_per_bar=4,
+        first_downbeat=0.75,
+        beats=np.array([0.75, 1.24]),
     )
     client = TestClient(create_app(model))
     resp = client.post(
@@ -136,6 +141,9 @@ def test_transcribe_sends_beat_grid(tmp_path):
         "bpm": 123.5,
         "beats_per_bar": 4,
         "first_downbeat": 0.75,
+        # Two beats and a handful of notes are far too little to measure a lag
+        # from, so the UI is told to shift its notes by nothing.
+        "onset_delay": 0.0,
     }
 
 
@@ -177,7 +185,7 @@ def test_transcribe_empty_stream(tmp_path):
     # No notes, but the trailing MIDI event is still emitted.
     assert _parse_sse(resp.text) == [
         {
-            "type": "midi",
+            "type": "finished",
             "data": base64.b64encode(FAKE_MIDI).decode("ascii"),
             "beat_grid": None,
         }
@@ -405,7 +413,7 @@ def test_concurrent_different_clients_do_not_preempt(tmp_path):
     # A ran to completion (ends with the assembled MIDI event) — not preempted.
     assert out["A"][0] == event_to_dict(s0)
     assert out["A"][-1] == {
-        "type": "midi",
+        "type": "finished",
         "data": base64.b64encode(FAKE_MIDI).decode("ascii"),
         "beat_grid": None,
     }
@@ -417,7 +425,7 @@ def test_concurrent_different_clients_do_not_preempt(tmp_path):
         files={"file": ("silent.wav", payload, "audio/wav")},
         headers={"X-Client-Id": "tab-B"},
     )
-    assert _parse_sse(resp_b_retry.text)[-1]["type"] == "midi"
+    assert _parse_sse(resp_b_retry.text)[-1]["type"] == "finished"
     assert model.transcribe.call_count == 2
 
 
@@ -451,5 +459,5 @@ def test_concurrent_same_client_preempts(tmp_path):
     # A was preempted: it streamed its first note but never the trailing MIDI.
     assert out["A"] == [event_to_dict(s0)]
     # B (the resubmit) ran to completion.
-    assert out["B"][-1]["type"] == "midi"
+    assert out["B"][-1]["type"] == "finished"
     assert model.transcribe.call_count == 2

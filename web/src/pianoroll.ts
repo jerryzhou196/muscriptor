@@ -19,13 +19,20 @@ export interface RollNote {
   stackOffset?: number;
 }
 
-/** Constant-tempo grid detected by the backend (the `midi` event's `beat_grid`). */
+/** Constant-tempo grid detected by the backend (the `finished` event's `beat_grid`). */
 export interface BeatGrid {
   bpm: number;
   /** null when the meter is unknown — then only beat lines are drawn. */
   beats_per_bar: number | null;
   /** Time of the first detected bar line, in seconds of the original audio. */
   first_downbeat: number;
+  /**
+   * Seconds the streamed note times sit late against these beats (see the
+   * backend's `BeatGrid.onset_delay`). The beat tracker locates the beats more
+   * accurately than the model locates its onsets, so the notes are the ones that
+   * move: subtract this from every note time, as the MIDI file already does.
+   */
+  onset_delay: number;
 }
 
 /** Don't shade measures narrower than this (px) — double the shading step instead. */
@@ -307,13 +314,21 @@ export class PianoRoll {
   }
 
   /**
-   * Switch the time grid from seconds to bars/beats. Note times are untouched:
-   * the grid is drawn in original-audio time, so 0s stays at 0s and the first
-   * bar line lands on the detected downbeat (with earlier bar lines extrapolated
-   * backwards). null keeps the seconds grid.
+   * Switch the time grid from seconds to bars/beats, moving the notes onto it by
+   * the grid's `onset_delay`. The grid itself is drawn in original-audio time, so
+   * 0s stays at 0s and the first bar line lands on the detected downbeat (with
+   * earlier bar lines extrapolated backwards). null keeps the seconds grid.
+   *
+   * The caller has to shift the scheduled audio to match (AudioEngine.shiftNotes).
    */
   setBeatGrid(grid: BeatGrid | null) {
     this.beatGrid = grid;
+    if (!grid?.onset_delay) return;
+    for (const n of this.notes) {
+      n.start -= grid.onset_delay;
+      n.end -= grid.onset_delay;
+    }
+    this.latestNoteStart -= grid.onset_delay;
   }
 
   /** Tell the roll the loaded audio length, which bounds the time-axis scroll. */
