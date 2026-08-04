@@ -287,15 +287,19 @@ export function App() {
         roll.setPlayhead(audio.seconds);
         // Feed the chunk-completion estimate of the transcribed span (completed
         // fraction × audio length). The roll combines it with the latest note
-        // onset and eases the frontier itself; null while not transcribing
-        // disables the tint (once done the whole roll is covered).
+        // onset and eases the frontier itself; null before transcription starts
+        // disables the tint. Once done the frontier sits at the full duration so
+        // the whole roll keeps the lighter "transcribed" wash.
         const dur = audio.duration;
+        const state = appStateRef.current;
         roll.setDuration(dur);
-        roll.setTranscribedUntil(
-          appStateRef.current === "transcribing" && dur > 0
-            ? progress.completedFraction() * dur
-            : null,
-        );
+        if (dur > 0 && state === "done") roll.setTranscribedUntil(dur, false);
+        else
+          roll.setTranscribedUntil(
+            dur > 0 && state === "transcribing"
+              ? progress.completedFraction() * dur
+              : null,
+          );
         roll.render();
         // The roll re-engages follow mode on its own when the user scrolls back
         // to the live transcription frontier and holds still — mirror that into

@@ -19,6 +19,25 @@ export interface RollNote {
   stackOffset?: number;
 }
 
+/** Constant-tempo grid detected by the backend (the `midi` event's `beat_grid`). */
+export interface BeatGrid {
+  bpm: number;
+  /** null when the meter is unknown — then only beat lines are drawn. */
+  beats_per_bar: number | null;
+  /** Time of the first detected bar line, in seconds of the original audio. */
+  first_downbeat: number;
+}
+
+/** Don't shade measures narrower than this (px) — double the shading step instead. */
+const MIN_BAR_PX = 40;
+
+/**
+ * Shading on every other bar. Translucent so it tints the pitch rows underneath.
+ */
+const BAR_STRIP = "rgba(255, 255, 255, 0.01)";
+/** Beat subdivisions are dropped below this spacing (px) rather than crowding the bars. */
+const MIN_BEAT_PX = 12;
+
 /** Reveal duration in ms — how long a note takes to grow to full width. */
 const REVEAL_MS = 280;
 
@@ -27,6 +46,52 @@ const NOTE_GAP_PX = 1.5;
 
 /** Upward nudge per overlapping same-pitch note drawn in front, so it peeks out. */
 const NOTE_STACK_PX = 1.5;
+
+/**
+ * Time grid for the span `[from, to]` seconds: `lines` are beat lines (or plain
+ * seconds when no tempo was detected), `strips` are the shaded half of the
+ * alternating bar shading — every other measure, so bars read as blocks rather
+ * than as separator lines. Both are phase-locked to `first_downbeat` and
+ * extrapolated backwards, so the pickup before the first downbeat is shaded and
+ * ruled like any other bar.
+ */
+export function timeGrid(
+  grid: BeatGrid | null,
+  from: number,
+  to: number,
+  pxPerSec: number,
+): { lines: number[]; strips: { from: number; to: number }[] } {
+  const lines: number[] = [];
+  const strips: { from: number; to: number }[] = [];
+  // No grid: the old one-second ruler, unshaded.
+  if (!grid) {
+    for (let s = Math.max(0, Math.ceil(from)); s <= to; s++) lines.push(s);
+    return { lines, strips };
+  }
+  const beat = 60 / grid.bpm;
+  // Meter unknown: shade every beat, there's nothing coarser to group them into.
+  let step = (grid.beats_per_bar ?? 1) * beat;
+  while (step * pxPerSec < MIN_BAR_PX) step *= 2;
+  // Start one measure early so the bar straddling `from` still gets shaded.
+  for (let k = Math.floor((from - grid.first_downbeat) / step); ; k++) {
+    const t = grid.first_downbeat + k * step;
+    if (t > to) break;
+    // Odd measures carry the shading; even ones show bare background.
+    if (((k % 2) + 2) % 2 === 1 && t + step > 0) {
+      strips.push({ from: Math.max(0, t), to: t + step });
+    }
+  }
+  // Beat lines only where they'd stay legible, and only if they're finer than
+  // the (possibly doubled) shading step.
+  if (step > beat && beat * pxPerSec >= MIN_BEAT_PX) {
+    for (let k = Math.ceil((from - grid.first_downbeat) / beat); ; k++) {
+      const t = grid.first_downbeat + k * beat;
+      if (t > to) break;
+      if (t >= 0) lines.push(t);
+    }
+  }
+  return { lines, strips };
+}
 
 /** Ease-out cubic: fast start, slowing as it reaches the end. */
 function easeOut(t: number): number {
@@ -142,6 +207,12 @@ export class PianoRoll {
    * silent spans where no notes arrive.
    */
   private chunkFrontier: number | null = null;
+  /**
+   * Whether the frontier is still advancing. False once transcription is done
+   * and the frontier is pinned at the full duration: the wash stays (light =
+   * transcribed) but the view must not chase the frontier to the end.
+   */
+  private frontierLive = true;
   /** Start time of the latest note seen — a precise lower bound on the frontier. */
   private latestNoteStart = 0;
   /** Frontier actually drawn; eases toward the target each frame for a smooth glide. */
@@ -169,6 +240,8 @@ export class PianoRoll {
   private pitchTop = DEFAULT_PITCH_TOP;
   /** Loaded audio length in seconds; caps how far the time axis can scroll. */
   private contentDuration = 0;
+  /** Detected beat grid; null until the final `midi` event arrives (then: seconds grid). */
+  private beatGrid: BeatGrid | null = null;
 
   get pxPerSec(): number {
     return this._pxPerSec;
@@ -233,6 +306,16 @@ export class PianoRoll {
     this.playhead = seconds;
   }
 
+  /**
+   * Switch the time grid from seconds to bars/beats. Note times are untouched:
+   * the grid is drawn in original-audio time, so 0s stays at 0s and the first
+   * bar line lands on the detected downbeat (with earlier bar lines extrapolated
+   * backwards). null keeps the seconds grid.
+   */
+  setBeatGrid(grid: BeatGrid | null) {
+    this.beatGrid = grid;
+  }
+
   /** Tell the roll the loaded audio length, which bounds the time-axis scroll. */
   setDuration(seconds: number) {
     this.contentDuration = seconds;
@@ -243,8 +326,9 @@ export class PianoRoll {
    * transcribing (which disables the tint). The drawn frontier is the max of this
    * and the latest note onset, eased over a few frames.
    */
-  setTranscribedUntil(seconds: number | null) {
+  setTranscribedUntil(seconds: number | null, live = true) {
     this.chunkFrontier = seconds;
+    this.frontierLive = live;
   }
 
   /** Show or hide every note belonging to `instrument`. */
@@ -267,6 +351,7 @@ export class PianoRoll {
     this.highlightedInstrument = null;
     this.playhead = 0;
     this.chunkFrontier = null;
+    this.frontierLive = true;
     this.latestNoteStart = 0;
     this.transcribedSmooth = 0;
     this.userOffset = null;
@@ -278,6 +363,7 @@ export class PianoRoll {
     this.pxPerPitch = null;
     this.pitchTop = DEFAULT_PITCH_TOP;
     this.contentDuration = 0;
+    this.beatGrid = null;
   }
 
   /**
@@ -321,7 +407,10 @@ export class PianoRoll {
   zoomTime(factor: number, anchorX: number) {
     this.noteGesture();
     const old = this._pxPerSec;
-    const next = Math.min(MAX_PX_PER_SEC, Math.max(MIN_PX_PER_SEC, old * factor));
+    const next = Math.min(
+      MAX_PX_PER_SEC,
+      Math.max(MIN_PX_PER_SEC, old * factor),
+    );
     if (next === old) return;
     const ax = anchorX - KEY_WIDTH;
     const base = this.userOffset ?? this.lastOffset;
@@ -430,24 +519,30 @@ export class PianoRoll {
     if (this.chunkFrontier !== null) {
       const target = Math.max(this.chunkFrontier, this.latestNoteStart);
       // Snap once effectively there, so it doesn't creep forever.
-      this.transcribedSmooth += (target - this.transcribedSmooth) * FRONTIER_SMOOTHING;
+      this.transcribedSmooth +=
+        (target - this.transcribedSmooth) * FRONTIER_SMOOTHING;
       if (Math.abs(target - this.transcribedSmooth) < 0.01) {
         this.transcribedSmooth = target;
       }
     } else {
-      this.transcribedSmooth = 0; // tint off once transcription finishes
+      this.transcribedSmooth = 0; // tint off when there's nothing transcribed
     }
-    const frontier = this.chunkFrontier !== null ? this.transcribedSmooth : null;
+    const frontier =
+      this.chunkFrontier !== null ? this.transcribedSmooth : null;
     // Until the user starts listening, the frontier is the interesting edge, so
     // the view follows it instead of the playhead parked at zero.
-    const followFrontier = frontier !== null && this.playhead <= PLAYHEAD_START_EPS;
+    const followFrontier =
+      frontier !== null &&
+      this.frontierLive &&
+      this.playhead <= PLAYHEAD_START_EPS;
 
     // A scroll gesture (unlike the explicit follow toggle) only pauses
     // following: if it leaves the moving frontier in view, follow re-engages
     // once the user has been still for a second — so glancing back and
     // returning doesn't cost them the auto-scroll.
     if (this.userOffset !== null && this.resumeArmed && followFrontier) {
-      const inView = frontier >= this.userOffset && frontier <= this.userOffset + viewSec;
+      const inView =
+        frontier >= this.userOffset && frontier <= this.userOffset + viewSec;
       if (inView && performance.now() - this.lastGestureAt >= RESUME_IDLE_MS) {
         this.userOffset = null;
         this.resumeArmed = false;
@@ -462,21 +557,34 @@ export class PianoRoll {
     if (this.userOffset !== null) {
       // Re-clamp each frame so a window resize or newly-streamed notes can't
       // leave the frozen view stranded past the content end.
-      offsetSec = Math.max(0, Math.min(this.userOffset, Math.max(0, this.contentEnd() - viewSec)));
+      offsetSec = Math.max(
+        0,
+        Math.min(this.userOffset, Math.max(0, this.contentEnd() - viewSec)),
+      );
     } else if (followFrontier) {
       // Ease toward parking the frontier at the follow anchor. The frontier is
       // already smoothed, so this second ease just adds a little give.
       const target = Math.max(
         0,
-        Math.min(frontier - viewSec * FOLLOW_ANCHOR_FRACTION, Math.max(0, this.contentEnd() - viewSec)),
+        Math.min(
+          frontier - viewSec * FOLLOW_ANCHOR_FRACTION,
+          Math.max(0, this.contentEnd() - viewSec),
+        ),
       );
-      offsetSec = this.lastOffset + (target - this.lastOffset) * FRONTIER_FOLLOW_SMOOTHING;
+      offsetSec =
+        this.lastOffset +
+        (target - this.lastOffset) * FRONTIER_FOLLOW_SMOOTHING;
       if (Math.abs(target - offsetSec) < 0.005) offsetSec = target;
     } else {
       offsetSec = this.lastOffset;
       if (this.playhead > offsetSec + viewSec * FOLLOW_ANCHOR_FRACTION) {
         offsetSec = this.playhead - viewSec * FOLLOW_ANCHOR_FRACTION;
-      } else if (this.playhead < offsetSec) {
+      } else if (
+        this.playhead > PLAYHEAD_START_EPS &&
+        this.playhead < offsetSec
+      ) {
+        // A playhead parked at zero (transcription just finished, nothing
+        // playing) isn't a reason to yank the view back to the start.
         offsetSec = this.playhead;
       }
       offsetSec = Math.max(0, Math.min(offsetSec, Math.max(0, maxT - viewSec)));
@@ -487,7 +595,8 @@ export class PianoRoll {
     // Pitch axis: auto-fit all 88 keys, or use the zoomed window if the user
     // has pinched vertically.
     const rowH = this.pxPerPitch ?? H / DEFAULT_PITCH_RANGE;
-    const pitchTop = this.pxPerPitch === null ? DEFAULT_PITCH_TOP : this.pitchTop;
+    const pitchTop =
+      this.pxPerPitch === null ? DEFAULT_PITCH_TOP : this.pitchTop;
 
     // Everything time-indexed lives in the content area to the right of the
     // key strip; clip so notes/grid can't bleed under the keyboard.
@@ -496,22 +605,33 @@ export class PianoRoll {
     ctx.rect(KEY_WIDTH, 0, contentW, H);
     ctx.clip();
 
-    // Pitch grid: faint horizontal stripes for C notes
+    // Pitch grid: darker rows under the black keys, so each octave's shape is
+    // readable at a glance (the keyboard's own pattern, mirrored into the notes).
     ctx.fillStyle = palette().stripe;
     for (let p = PITCH_MIN; p <= PITCH_MAX; p++) {
-      if (p % 12 === 0) {
+      if (isBlackKey(p)) {
         const y = (pitchTop - p) * rowH;
         ctx.fillRect(KEY_WIDTH, y, contentW, rowH);
       }
     }
 
-    // Time grid: vertical lines every second.
+    // Time grid: alternating bar shading plus beat lines once the tempo is
+    // known, else a plain one-second ruler. The shading is translucent, so it
+    // lifts the black-key rows above too instead of painting over them.
+    const { lines, strips } = timeGrid(
+      this.beatGrid,
+      offsetSec,
+      offsetSec + viewSec,
+      pxPerSec,
+    );
+    const xAt = (t: number) => KEY_WIDTH + (t - offsetSec) * pxPerSec;
+    ctx.fillStyle = BAR_STRIP;
+    for (const s of strips)
+      ctx.fillRect(xAt(s.from), 0, xAt(s.to) - xAt(s.from), H);
     ctx.strokeStyle = palette().grid;
     ctx.lineWidth = 1;
-    const startSec = Math.floor(offsetSec);
-    const endSec = Math.ceil(offsetSec + viewSec);
-    for (let s = startSec; s <= endSec; s++) {
-      const x = KEY_WIDTH + (s - offsetSec) * pxPerSec;
+    for (const t of lines) {
+      const x = xAt(t);
       ctx.beginPath();
       ctx.moveTo(x + 0.5, 0);
       ctx.lineTo(x + 0.5, H);
@@ -527,7 +647,7 @@ export class PianoRoll {
     if (frontier !== null) {
       const x0 = KEY_WIDTH + (0 - offsetSec) * pxPerSec;
       const x1 = KEY_WIDTH + (frontier - offsetSec) * pxPerSec;
-      ctx.fillStyle = "rgba(255, 255, 255, 0.05)";
+      ctx.fillStyle = "rgba(255, 255, 255, 0.025)";
       ctx.fillRect(x0, 0, x1 - x0, H);
     }
 
@@ -549,7 +669,9 @@ export class PianoRoll {
       // Left-to-right reveal: grow from the note's onset to its full width,
       // easing out over REVEAL_MS. Unstamped notes draw at full width.
       const reveal =
-        n.spawn === undefined ? 1 : easeOut(Math.min(1, (now - n.spawn) / REVEAL_MS));
+        n.spawn === undefined
+          ? 1
+          : easeOut(Math.min(1, (now - n.spawn) / REVEAL_MS));
       const w = full * reveal;
       if (x + w < KEY_WIDTH || x > W) continue;
       // Nudge up so notes hidden behind an overlapping same-pitch note peek
@@ -562,7 +684,10 @@ export class PianoRoll {
       // Muting dims a track; while an instrument is highlighted (hovered in
       // the instrument list), every other track fades even further back.
       let alpha = this.mutedInstruments.has(n.instrument) ? 0.2 : 1;
-      if (this.highlightedInstrument !== null && n.instrument !== this.highlightedInstrument) {
+      if (
+        this.highlightedInstrument !== null &&
+        n.instrument !== this.highlightedInstrument
+      ) {
         alpha = Math.min(alpha, 0.15);
       }
       ctx.globalAlpha = alpha;
