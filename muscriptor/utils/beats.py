@@ -144,10 +144,9 @@ class BeatGrid:
         if measured is None:
             return self
         logger.info(
-            "onsets sit %+.1f ± %.1f ms off a 1/%d-beat grid (|R| = %.2f over %d "
+            "onsets sit %+.1f ms off a 1/%d-beat grid (|R| = %.2f over %d "
             "onsets); moving the downbeat from %.3fs to %.3fs",
             1000 * measured.offset_s,
-            1000 * measured.sem_s,
             measured.subdivision,
             measured.concentration,
             measured.n_onsets,
@@ -163,8 +162,6 @@ class OnsetOffset:
 
     # Signed seconds, positive when the onsets are late.
     offset_s: float
-    # Standard error of `offset_s`: how precisely this transcription pins it down.
-    sem_s: float
     # Resultant length in [0, 1]: how tightly the onsets sit on the grid.
     concentration: float
     # Subdivisions per beat of the grid the offset is measured against.
@@ -185,23 +182,16 @@ def onset_phase(onsets: Onsets, beats: np.ndarray) -> np.ndarray:
     return np.interp(times[inside], beats, np.arange(len(beats)))
 
 
-def phase_resultant(
-    phase_beats: np.ndarray, subdivision: int
-) -> tuple[float, float, float]:
+def phase_resultant(phase_beats: np.ndarray, subdivision: int) -> tuple[float, float]:
     """Compute the average of unit vectors (phase_beats) on a circle.
-    
+
     The angle tells us the mean offset, and the magnitude tells us how well they align
     (the concentration).
     """
     angles = 2 * np.pi * np.mod(phase_beats * subdivision, 1.0)
     mean = np.exp(1j * angles).mean()
-    concentration, theta = float(np.abs(mean)), float(np.angle(mean))
-    # Standard error of a mean direction: the spread tangential to it, thinned by
-    # sqrt(n) and divided by the resultant length — a short resultant pins the
-    # angle down badly.
-    spread = np.sqrt((np.sin(angles - theta) ** 2).mean() / len(angles))
     turns = 1 / (2 * np.pi * subdivision)  # radians on the fine grid → beats
-    return concentration, theta * turns, spread / concentration * turns
+    return float(np.abs(mean)), float(np.angle(mean)) * turns
 
 
 def measure_onset_offset(onsets: Onsets, grid: "BeatGrid") -> OnsetOffset | None:
@@ -210,7 +200,7 @@ def measure_onset_offset(onsets: Onsets, grid: "BeatGrid") -> OnsetOffset | None
     Algorithm: For each onset, plot it as a unit vector on a circle where the angle is
     its relative position in the beat. Then take the average of these vectors: the
     angle tells you the average offset and the magnitude says how well they align.
-    In practice, the onsets are on a subdivision of the beat (e.g. 8th notes) so 
+    In practice, the onsets are on a subdivision of the beat (e.g. 8th notes) so
     also repeat this for different subdivisions and pick the one where the notes align
     the best to read the alignment from.
     """
@@ -240,7 +230,7 @@ def measure_onset_offset(onsets: Onsets, grid: "BeatGrid") -> OnsetOffset | None
 
     # Keep the subdivision with the highest concentration
     subdivision = max(scored, key=lambda s: scored[s][0])
-    concentration, offset_beats, sem_beats = scored[subdivision]
+    concentration, offset_beats = scored[subdivision]
 
     if concentration < MIN_ONSET_CONCENTRATION:
         logger.info(
@@ -264,7 +254,6 @@ def measure_onset_offset(onsets: Onsets, grid: "BeatGrid") -> OnsetOffset | None
 
     return OnsetOffset(
         offset_s=offset_s,
-        sem_s=sem_beats * period_s,
         concentration=concentration,
         subdivision=subdivision,
         n_onsets=len(phase_beats),

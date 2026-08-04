@@ -197,7 +197,8 @@ def test_measure_onset_offset_survives_beat_quantization():
     measured = measure_onset_offset(_onsets(exact, delay=0.010), grid)
     assert measured is not None
     assert abs(measured.offset_s - 0.010) < 0.003
-    assert measured.sem_s < 0.003
+    # The dither costs concentration — the onsets are still clearly on the grid.
+    assert measured.concentration > 0.5
 
 
 def test_aligned_to_onsets_moves_the_downbeat_onto_the_notes():
