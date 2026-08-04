@@ -114,7 +114,7 @@ def test_transcribe_streams_sse_events(tmp_path):
     # Note events, then a trailing base64-encoded MIDI event.
     assert parsed[:-1] == [event_to_dict(e) for e in events]
     assert parsed[-1] == {
-        "type": "finished",
+        "type": "transcription_complete",
         "data": base64.b64encode(FAKE_MIDI).decode("ascii"),
         "beat_grid": None,
     }
@@ -185,7 +185,7 @@ def test_transcribe_empty_stream(tmp_path):
     # No notes, but the trailing MIDI event is still emitted.
     assert _parse_sse(resp.text) == [
         {
-            "type": "finished",
+            "type": "transcription_complete",
             "data": base64.b64encode(FAKE_MIDI).decode("ascii"),
             "beat_grid": None,
         }
@@ -413,7 +413,7 @@ def test_concurrent_different_clients_do_not_preempt(tmp_path):
     # A ran to completion (ends with the assembled MIDI event) — not preempted.
     assert out["A"][0] == event_to_dict(s0)
     assert out["A"][-1] == {
-        "type": "finished",
+        "type": "transcription_complete",
         "data": base64.b64encode(FAKE_MIDI).decode("ascii"),
         "beat_grid": None,
     }
@@ -425,7 +425,7 @@ def test_concurrent_different_clients_do_not_preempt(tmp_path):
         files={"file": ("silent.wav", payload, "audio/wav")},
         headers={"X-Client-Id": "tab-B"},
     )
-    assert _parse_sse(resp_b_retry.text)[-1]["type"] == "finished"
+    assert _parse_sse(resp_b_retry.text)[-1]["type"] == "transcription_complete"
     assert model.transcribe.call_count == 2
 
 
@@ -459,5 +459,5 @@ def test_concurrent_same_client_preempts(tmp_path):
     # A was preempted: it streamed its first note but never the trailing MIDI.
     assert out["A"] == [event_to_dict(s0)]
     # B (the resubmit) ran to completion.
-    assert out["B"][-1]["type"] == "finished"
+    assert out["B"][-1]["type"] == "transcription_complete"
     assert model.transcribe.call_count == 2

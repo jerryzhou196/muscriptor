@@ -4,8 +4,9 @@ POST /transcribe with an audio file (multipart/form-data field `file`; WAV,
 or any format soundfile/libsndfile can read — mp3, flac, ogg, m4a, …) returns
 `text/event-stream`. Each event's data is a JSON dict tagged by `type`:
 `start` / `end` note events (same shape as `muscriptor.main._event_to_dict`),
-`progress` chunk anchors (`{completed, total}`), and a final `finished` event
-carrying the base64-encoded .mid file (`data`) plus the detected `beat_grid`
+`progress` chunk anchors (`{completed, total}`), and a final
+`transcription_complete` event carrying the base64-encoded .mid file (`data`)
+plus the detected `beat_grid`
 (`{bpm, beats_per_bar, first_downbeat, onset_delay}`, or null if no tempo was
 found). `onset_delay` is how late the streamed note times are against those
 beats: the MIDI has it taken out already, an SSE consumer has to subtract it.
@@ -281,7 +282,7 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
                 # fixed seconds grid; null when no tempo was detected.
                 payload = json.dumps(
                     {
-                        "type": "finished",
+                        "type": "transcription_complete",
                         "data": midi_b64,
                         # Only the fields the UI draws with; `grid.beats` is an
                         # ndarray and not JSON-serializable anyway.

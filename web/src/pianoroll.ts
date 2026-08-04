@@ -19,7 +19,7 @@ export interface RollNote {
   stackOffset?: number;
 }
 
-/** Constant-tempo grid detected by the backend (the `finished` event's `beat_grid`). */
+/** Constant-tempo grid from the backend (`transcription_complete`'s `beat_grid`). */
 export interface BeatGrid {
   bpm: number;
   /** null when the meter is unknown — then only beat lines are drawn. */

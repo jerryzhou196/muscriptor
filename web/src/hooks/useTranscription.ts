@@ -1,4 +1,9 @@
-import { useRef, type Dispatch, type RefObject, type SetStateAction } from "react";
+import {
+  useRef,
+  type Dispatch,
+  type RefObject,
+  type SetStateAction,
+} from "react";
 import { streamTranscribeWithRetry, TranscribeError } from "../sse";
 import { track } from "../analytics";
 import type { AudioEngine } from "../audio";
@@ -17,8 +22,8 @@ type EndEvent = {
   end_time: number;
   start_event_index: number;
 };
-type FinishedEvent = {
-  type: "finished";
+type TranscriptionCompleteEvent = {
+  type: "transcription_complete";
   data: string; // base64-encoded .mid file
   beat_grid: BeatGrid | null; // null when no constant tempo was detected
 };
@@ -27,7 +32,8 @@ type ProgressMsg = {
   completed: number; // chunks transcribed so far
   total: number; // total chunks
 };
-type StreamedEvent = StartEvent | EndEvent | FinishedEvent | ProgressMsg;
+type StreamedEvent =
+  StartEvent | EndEvent | TranscriptionCompleteEvent | ProgressMsg;
 
 export type AppState = "idle" | "transcribing" | "done" | "error";
 
@@ -226,7 +232,7 @@ export function useTranscription(deps: TranscriptionDeps) {
         // it can't repopulate the piano roll / re-schedule old notes.
         if (isStale()) return;
         const ev = raw as StreamedEvent;
-        if (ev.type === "finished") {
+        if (ev.type === "transcription_complete") {
           // Final event: the assembled MIDI file. Enables the download button.
           setMidi(ev.data);
           // Tempo came with it — redraw the time grid as bars instead of seconds,
