@@ -112,18 +112,9 @@ class BeatGrid:
     def aligned_to_onsets(self, onsets: Onsets) -> "BeatGrid":
         """This grid moved onto `onsets`, so bar lines land on the notes.
 
-        `onsets` are note onset times in seconds on the same timeline as the
-        audio the grid was detected from — the transcription the grid is about to
-        be written alongside. Whatever offset separates them from the tracked
-        beats is added to `first_downbeat`, which is a pure phase shift: the
-        tempo and the meter are unchanged, and so is the audio the notes
-        describe. What changes is `bar_offset`, by the same amount in the other
-        direction, so the notes come out sitting on the bar line instead of just
-        after it.
-
-        Returns `self` unchanged when there is nothing to measure from: no
-        tracked beats (a hand-built grid), too few onsets, or onsets that do not
-        sit on a beat subdivision at all. See :func:`estimate_onset_delay`.
+        This is to correct for the fact that we observed that the detected onsets don't
+        always align well with the beats.
+        See estimate_onset_delay() for details.
         """
         if self.beats is None:
             return self
@@ -187,6 +178,9 @@ def get_phase_with_subdivision(
 
 def estimate_onset_delay(onsets: Onsets, grid: "BeatGrid") -> OnsetDelay | None:
     """How late `onsets` sit against the beat subdivision they are on.
+
+    This is to correct for the fact that we observed that the detected onsets don't
+    always align well with the beats.
 
     Algorithm: For each onset, plot it as a unit vector on a circle where the angle is
     its relative position in the beat. Then take the average of these vectors: the

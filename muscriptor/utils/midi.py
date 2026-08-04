@@ -23,9 +23,8 @@ def notes_to_midi(
     tempo, the time signature and a delay that puts bar lines on real downbeats.
     Defaults to PLACEHOLDER_GRID.
 
-    A grid detected from audio is first moved onto `notes` themselves
-    (BeatGrid.aligned_to_onsets), which corrects for these onsets landing a few
-    milliseconds after the beats tracked on the same recording.
+    The beat grid is first aligned using aligned_to_onsets() to better match the
+    detected notes.
     """
     beat_grid = (beat_grid or PLACEHOLDER_GRID).aligned_to_onsets(
         [note.onset for note in notes]
