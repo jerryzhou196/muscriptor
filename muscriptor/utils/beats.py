@@ -1,7 +1,8 @@
 """Beat-grid detection, for writing real tempo and time signatures into MIDI."""
 
 import logging
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 import numpy as np
@@ -22,6 +23,57 @@ MIN_BEATS = 8
 # Marker text prefix recording how far notes were delayed to align bar lines,
 # so `/auralize` can line the synthesis back up with the original audio.
 BAR_OFFSET_MARKER = "muscriptor:bar_offset="
+
+# ------------------------------------------------- onset-phase downbeat correction
+#
+# Transcribed onsets land a few milliseconds after the beats the tracker reports
+# on the same recording — some of it the model's own delay, some the tracker
+# placing beats differently. Bar lines put on the tracked downbeat therefore sit
+# slightly *before* the notes they are meant to bracket.
+# `BeatGrid.aligned_to_onsets` measures that gap from the notes themselves and
+# moves the grid onto them.
+#
+# The measurement is the onset-phase route of the offline delay analysis, where it
+# goes by "predicted onsets vs recording grid": express every onset as a position
+# within its beat, treat each as a unit vector at angle 2π·frac(position × s) on a
+# grid of `s` subdivisions per beat, and average. The resultant's length says how
+# tightly the onsets sit on that grid and its angle says how late they sit. It is
+# the one estimate of the delay that needs nothing but a transcription and the
+# beats already detected for the tempo — no annotations, no resynthesis.
+
+# Candidate grids, binary and triplet divisions of the beat, simplest first.
+ONSET_SUBDIVISIONS = (1, 2, 3, 4, 6, 8, 12, 16, 24)
+
+# Accept a simpler grid whose concentration is within this much of the best one:
+# |R| climbs again on every grid that merely contains a coarser one, and the
+# coarser one is the honest description of where the onsets are.
+CONCENTRATION_SLACK = 0.95
+
+# The angle only pins the offset down modulo one subdivision, so half a
+# subdivision is the largest delay it can express; grids finer than this could
+# not hold the delay unambiguously and are not considered.
+MIN_HALF_SUBDIVISION_S = 0.03
+
+# Below this resultant length the onsets are not really on the chosen grid, and
+# its angle means nothing.
+MIN_ONSET_CONCENTRATION = 0.25
+
+# |R| for n random angles is about 1/sqrt(n), so fewer onset times than this can
+# clear the floor above by chance. Roughly a bar's worth of eighth notes per
+# second of audio, i.e. a few seconds of dense music or a good deal more of
+# sparse music.
+MIN_ONSETS = 100
+
+# Offsets larger than this are refused as a bad grid fit rather than a real
+# delay. Over the 353 songs of the sweep where this is readable at all the
+# measurement runs +6.7 ms at the median, quartiles +0.7 and +12.3 ms, 99th
+# percentile +25 ms, so nothing past 40 ms is the delay this is meant to correct;
+# what does produce such numbers is a mis-chosen coarse grid, whose angle can
+# come out anywhere.
+MAX_ONSET_OFFSET_S = 0.04
+
+# Note onset times in seconds, however the caller happens to hold them.
+Onsets = Sequence[float] | np.ndarray
 
 
 class BeatDetectionError(RuntimeError):
@@ -55,6 +107,12 @@ class BeatGrid:
     beats_per_bar: int | None
     # Time of the first detected bar line, in seconds.
     first_downbeat: float
+    # The individual beat times the grid was fitted to, kept for
+    # `aligned_to_onsets`, which needs them rather than the fitted tempo: the
+    # tracked beats follow the recording's small tempo wobbles, and those are the
+    # same size as the offset being measured. None for a hand-built grid; kept
+    # out of equality and repr, being an array and an implementation detail.
+    beats: np.ndarray | None = field(default=None, repr=False, compare=False)
 
     @property
     def bar_seconds(self) -> float | None:
@@ -74,6 +132,154 @@ class BeatGrid:
         if bar is None:
             return 0.0
         return (bar - self.first_downbeat % bar) % bar
+
+    def aligned_to_onsets(self, onsets: Onsets) -> "BeatGrid":
+        """This grid moved onto `onsets`, so bar lines land on the notes.
+
+        `onsets` are note onset times in seconds on the same timeline as the
+        audio the grid was detected from — the transcription the grid is about to
+        be written alongside. Whatever offset separates them from the tracked
+        beats is added to `first_downbeat`, which is a pure phase shift: the
+        tempo and the meter are unchanged, and so is the audio the notes
+        describe. What changes is `bar_offset`, by the same amount in the other
+        direction, so the notes come out sitting on the bar line instead of just
+        after it.
+
+        Returns `self` unchanged when there is nothing to measure from: no
+        tracked beats (a hand-built grid), too few onsets, or onsets that do not
+        sit on a beat subdivision at all. See :func:`measure_onset_offset`.
+        """
+        if self.beats is None:
+            return self
+        measured = measure_onset_offset(onsets, self.beats)
+        if measured is None:
+            return self
+        logger.info(
+            "onsets sit %+.1f ± %.1f ms off a 1/%d-beat grid (|R| = %.2f over %d "
+            "onsets); moving the downbeat from %.3fs to %.3fs",
+            1000 * measured.offset_s,
+            1000 * measured.sem_s,
+            measured.subdivision,
+            measured.concentration,
+            measured.n_onsets,
+            self.first_downbeat,
+            self.first_downbeat + measured.offset_s,
+        )
+        return replace(self, first_downbeat=self.first_downbeat + measured.offset_s)
+
+
+@dataclass(frozen=True)
+class OnsetOffset:
+    """How far a set of note onsets sits from the beat subdivision it is on."""
+
+    # Signed seconds, positive when the onsets are late.
+    offset_s: float
+    # Standard error of `offset_s`: how precisely this transcription pins it down.
+    sem_s: float
+    # Resultant length in [0, 1]: how tightly the onsets sit on the grid.
+    concentration: float
+    # Subdivisions per beat of the grid the offset is measured against.
+    subdivision: int
+    # Distinct onset times that went into it.
+    n_onsets: int
+
+
+def onset_phase(onsets: Onsets, beats: np.ndarray) -> np.ndarray:
+    """Onset times as positions in continuous beats.
+
+    Onsets outside the tracked span drop out, since there is no beat to place
+    them in. One entry per distinct onset time (to the millisecond) rather than
+    per note, so a six-note chord does not outvote six single notes elsewhere.
+    """
+    times = np.unique(np.round(np.asarray(onsets, dtype=float), 3))
+    inside = (times >= beats[0]) & (times <= beats[-1])
+    return np.interp(times[inside], beats, np.arange(len(beats)))
+
+
+def phase_resultant(
+    phase_beats: np.ndarray, subdivision: int
+) -> tuple[float, float, float]:
+    """(concentration, offset_beats, sem_beats) of onset phase on a 1/s grid."""
+    angles = 2 * np.pi * np.mod(phase_beats * subdivision, 1.0)
+    mean = np.exp(1j * angles).mean()
+    concentration, theta = float(np.abs(mean)), float(np.angle(mean))
+    # Standard error of a mean direction: the spread tangential to it, thinned by
+    # sqrt(n) and divided by the resultant length — a short resultant pins the
+    # angle down badly.
+    spread = np.sqrt((np.sin(angles - theta) ** 2).mean() / len(angles))
+    turns = 1 / (2 * np.pi * subdivision)  # radians on the fine grid → beats
+    return concentration, theta * turns, spread / concentration * turns
+
+
+def measure_onset_offset(onsets: Onsets, beats: np.ndarray) -> OnsetOffset | None:
+    """How late `onsets` sit against the beat subdivision they are on.
+
+    The grid is chosen per transcription: the simplest of ONSET_SUBDIVISIONS
+    whose concentration is within CONCENTRATION_SLACK of the best-scoring one.
+    Phase is measured within the beat rather than the bar, because trackers pin
+    beats down far better than bars, and the answer is the same either way — a
+    constant offset of every beat is a constant offset of every bar line.
+
+    Returns None when the onsets cannot say anything: fewer than MIN_ONSETS of
+    them on the tracked span, no grid coarse enough to express the offset, a
+    concentration below MIN_ONSET_CONCENTRATION (the onsets are not on a
+    subdivision), or an offset past MAX_ONSET_OFFSET_S (the grid is a bad fit).
+    """
+    if len(beats) < 2:
+        return None
+    # Mean spacing, not the median inter-beat interval: on the tracker's 20 ms
+    # frame grid the median snaps to whole frames.
+    period_s = (beats[-1] - beats[0]) / (len(beats) - 1)
+
+    phase_beats = onset_phase(onsets, beats)
+    if len(phase_beats) < MIN_ONSETS:
+        logger.info(
+            "not correcting the downbeat: %d onset time(s) on the tracked span, "
+            "need %d",
+            len(phase_beats),
+            MIN_ONSETS,
+        )
+        return None
+
+    candidates = [
+        s for s in ONSET_SUBDIVISIONS if period_s / (2 * s) >= MIN_HALF_SUBDIVISION_S
+    ]
+    if not candidates:
+        # Only at an implausible tempo: even a whole beat is under 60 ms.
+        logger.info("not correcting the downbeat: no grid coarse enough to fit")
+        return None
+    scored = {s: phase_resultant(phase_beats, s) for s in candidates}
+    best = max(concentration for concentration, _, _ in scored.values())
+    subdivision = next(
+        s for s in candidates if scored[s][0] >= CONCENTRATION_SLACK * best
+    )
+    concentration, offset_beats, sem_beats = scored[subdivision]
+
+    if concentration < MIN_ONSET_CONCENTRATION:
+        logger.info(
+            "not correcting the downbeat: onsets sit on no subdivision of the beat "
+            "(best |R| = %.2f, need %.2f)",
+            best,
+            MIN_ONSET_CONCENTRATION,
+        )
+        return None
+    offset_s = offset_beats * period_s
+    if abs(offset_s) > MAX_ONSET_OFFSET_S:
+        logger.warning(
+            "not correcting the downbeat: onsets measured %+.0f ms off a "
+            "1/%d-beat grid, further than the %+.0f ms this can plausibly be",
+            1000 * offset_s,
+            subdivision,
+            1000 * MAX_ONSET_OFFSET_S,
+        )
+        return None
+    return OnsetOffset(
+        offset_s=offset_s,
+        sem_s=sem_beats * period_s,
+        concentration=concentration,
+        subdivision=subdivision,
+        n_onsets=len(phase_beats),
+    )
 
 
 def fit_tempo(beats: np.ndarray) -> tuple[float, float]:
@@ -175,4 +381,9 @@ def detect_grid(
         first_downbeat,
         residual * 1000,
     )
-    return BeatGrid(bpm=bpm, beats_per_bar=beats_per_bar, first_downbeat=first_downbeat)
+    return BeatGrid(
+        bpm=bpm,
+        beats_per_bar=beats_per_bar,
+        first_downbeat=first_downbeat,
+        beats=beats,
+    )

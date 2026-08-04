@@ -652,6 +652,10 @@ class TranscriptionModel:
         `mode` decides what a failed detection means: raise (True), skip detection
         entirely (False), or warn and fall back to the placeholder tempo
         ("best-effort").
+
+        The grid carries the tracked beat times along, so that writing the MIDI
+        can move it onto the transcription's own onsets (see
+        BeatGrid.aligned_to_onsets).
         """
         if mode is False:
             return None

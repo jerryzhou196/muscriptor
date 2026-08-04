@@ -3,6 +3,7 @@
 import tempfile
 from pathlib import Path
 
+import numpy as np
 import pytest
 from mido import MidiFile
 
@@ -81,6 +82,52 @@ def test_bar_alignment_shifts_notes_without_negative_ticks():
         if msg.type == "note_on" and msg.velocity > 0:
             break
     assert played == pytest.approx(grid.bar_offset(), abs=0.01)
+
+
+def _late_notes(beats, delay, subdivision=4):
+    """Sixteenth notes on `beats`, every one `delay` seconds late."""
+    fine = np.linspace(beats[0], beats[-1], (len(beats) - 1) * subdivision + 1)
+    return [
+        Note(
+            is_drum=False,
+            program=0,
+            onset=float(onset + delay),
+            offset=float(onset + delay + 0.05),
+            pitch=60,
+        )
+        for onset in fine
+    ]
+
+
+def test_a_detected_grid_is_moved_onto_the_notes():
+    """Bar lines follow the transcription, not the beats tracked on the audio.
+
+    Real onsets land a few milliseconds after those beats, so a grid carrying
+    them (only a detected one does) is shifted onto the notes before the bar
+    offset is computed — the notes then sit on the bar line rather than after it.
+    """
+    delay = 0.012
+    beats = np.arange(64) * (60.0 / 120.0)
+    grid = BeatGrid(bpm=120.0, beats_per_bar=4, first_downbeat=0.0, beats=beats)
+    midi = notes_to_midi(_late_notes(beats, delay), beat_grid=grid)
+
+    bar = grid.bar_seconds
+    assert grid.bar_offset() == 0.0  # a bar line is already on the tracked beat
+    assert read_bar_offset(midi) == pytest.approx(bar - delay, abs=0.002)
+    played = 0.0
+    for msg in midi:
+        played += msg.time
+        if msg.type == "note_on" and msg.velocity > 0:
+            break
+    assert played % bar == pytest.approx(0.0, abs=0.002)
+
+
+def test_notes_that_ignore_the_beat_leave_the_grid_alone():
+    """Nothing to measure a correction from means the grid is written as detected."""
+    beats = np.arange(64) * (60.0 / 120.0)
+    grid = BeatGrid(bpm=120.0, beats_per_bar=4, first_downbeat=0.31, beats=beats)
+    midi = notes_to_midi(_sample_notes(), beat_grid=grid)
+    assert read_bar_offset(midi) == round(grid.bar_offset(), 4)
 
 
 def test_bar_offset_marker_is_machine_readable():

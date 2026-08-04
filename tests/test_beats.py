@@ -8,10 +8,14 @@ import numpy as np
 
 from muscriptor.utils.beats import (
     BAR_OFFSET_MARKER,
+    MAX_ONSET_OFFSET_S,
     MAX_TEMPO_RESIDUAL,
+    MIN_ONSETS,
     BeatGrid,
     fit_tempo,
     infer_beats_per_bar,
+    measure_onset_offset,
+    onset_phase,
     read_bar_offset,
 )
 
@@ -23,6 +27,12 @@ def _beats(bpm=120.0, n=64, start=0.0, drift=0.0):
         span = t[-1] - t[0]
         t = t[0] + (t - t[0]) * (1 + drift * (t - t[0]) / span)
     return t
+
+
+def _onsets(beats, subdivision=4, delay=0.0):
+    """Onsets on every 1/subdivision of `beats`, `delay` seconds late."""
+    fine = np.linspace(beats[0], beats[-1], (len(beats) - 1) * subdivision + 1)
+    return fine + delay
 
 
 def test_fit_tempo_recovers_tempo():
@@ -75,6 +85,126 @@ def test_bar_offset_is_zero_without_a_meter():
     grid = BeatGrid(bpm=120.0, beats_per_bar=None, first_downbeat=3.7)
     assert grid.bar_seconds is None
     assert grid.bar_offset() == 0.0
+
+
+def test_onset_phase_places_onsets_in_continuous_beats():
+    beats = _beats(120.0, n=5)  # every 0.5 s
+    phase = onset_phase([0.0, 0.25, 0.5, 2.0], beats)
+    np.testing.assert_allclose(phase, [0.0, 0.5, 1.0, 4.0])
+
+
+def test_onset_phase_drops_onsets_outside_the_tracked_span():
+    beats = _beats(120.0, n=5, start=1.0)  # 1.0 s … 3.0 s
+    assert len(onset_phase([0.5, 1.0, 2.0, 3.5], beats)) == 2
+
+
+def test_onset_phase_counts_each_onset_time_once():
+    """A chord is one vote, not one per note."""
+    beats = _beats(120.0, n=5)
+    assert len(onset_phase([1.0, 1.0, 1.0004, 1.5], beats)) == 2
+
+
+def test_measure_onset_offset_recovers_a_known_delay():
+    beats = _beats(126.0)
+    measured = measure_onset_offset(_onsets(beats, delay=0.012), beats)
+    assert measured is not None
+    # 1 ms of slack for the millisecond rounding in onset_phase.
+    assert abs(measured.offset_s - 0.012) < 0.001
+    assert measured.subdivision == 4
+    assert measured.concentration > 0.99
+
+
+def test_measure_onset_offset_recovers_a_negative_delay():
+    beats = _beats(126.0)
+    measured = measure_onset_offset(_onsets(beats, delay=-0.015), beats)
+    assert measured is not None
+    assert abs(measured.offset_s + 0.015) < 0.001
+
+
+def test_measure_onset_offset_picks_the_simplest_fitting_grid():
+    """Eighth notes fit 1/8 and 1/16 grids equally; the eighth grid is the answer."""
+    beats = _beats(120.0)
+    measured = measure_onset_offset(_onsets(beats, subdivision=2), beats)
+    assert measured is not None
+    assert measured.subdivision == 2
+
+
+def test_measure_onset_offset_needs_enough_onsets():
+    beats = _beats(120.0)
+    onsets = _onsets(beats, subdivision=1, delay=0.01)[: MIN_ONSETS - 1]
+    assert measure_onset_offset(onsets, beats) is None
+
+
+def test_measure_onset_offset_rejects_onsets_off_the_grid():
+    """Onsets scattered through the beat have no phase worth reading."""
+    beats = _beats(120.0)
+    rng = np.random.default_rng(0)
+    onsets = rng.uniform(beats[0], beats[-1], 400)
+    assert measure_onset_offset(onsets, beats) is None
+
+
+def test_measure_onset_offset_refuses_an_implausible_offset():
+    """Well past the cap is a badly chosen grid, not a transcription delay.
+
+    It takes a coarse grid to even express such an offset — a slow song, and
+    onsets no finer than half-beats — which is the case the cap is there for.
+    """
+    beats = _beats(60.0)
+    onsets = _onsets(beats, subdivision=2, delay=1.5 * MAX_ONSET_OFFSET_S)
+    assert measure_onset_offset(onsets, beats) is None
+
+
+def test_measure_onset_offset_reads_the_offset_modulo_one_subdivision():
+    """Landing a subdivision late is indistinguishable from landing on time.
+
+    The phase angle wraps, so the correction can only ever be a fraction of a
+    subdivision — it fixes where notes sit inside the beat, never which beat.
+    """
+    beats = _beats(120.0)  # 1/4 beat = 125 ms on the grid chosen below
+    measured = measure_onset_offset(_onsets(beats, delay=0.125 + 0.01), beats)
+    assert measured is not None
+    assert measured.subdivision == 4
+    assert abs(measured.offset_s - 0.01) < 0.001
+
+
+def test_measure_onset_offset_survives_beat_quantization():
+    """Beats reported on beat_this's 20 ms frame grid still resolve a 10 ms delay.
+
+    The tracker only ever reports multiples of 20 ms, which alone could not
+    express the delay; the true beat phase drifting against that grid dithers the
+    rounding, so the average over a whole song still lands on it.
+    """
+    exact = _beats(126.0, n=200)
+    quantized = np.round(exact / 0.02) * 0.02
+    measured = measure_onset_offset(_onsets(exact, delay=0.010), quantized)
+    assert measured is not None
+    assert abs(measured.offset_s - 0.010) < 0.003
+    assert measured.sem_s < 0.003
+
+
+def test_aligned_to_onsets_moves_the_downbeat_onto_the_notes():
+    beats = _beats(126.0, start=0.4)
+    grid = BeatGrid(bpm=126.0, beats_per_bar=4, first_downbeat=0.4, beats=beats)
+    aligned = grid.aligned_to_onsets(_onsets(beats, delay=0.012))
+    assert abs(aligned.first_downbeat - (0.4 + 0.012)) < 0.001
+    # A phase shift only: same tempo, same meter, same beats to measure against.
+    assert (aligned.bpm, aligned.beats_per_bar) == (grid.bpm, grid.beats_per_bar)
+    assert aligned.beats is grid.beats
+    # The notes end up on the bar line rather than just after it.
+    assert abs(aligned.bar_offset() - (grid.bar_offset() - 0.012)) < 0.001
+
+
+def test_aligned_to_onsets_is_a_no_op_without_tracked_beats():
+    """A hand-built grid carries no beats, so there is nothing to measure."""
+    grid = BeatGrid(bpm=120.0, beats_per_bar=4, first_downbeat=1.0)
+    assert grid.aligned_to_onsets(_onsets(_beats(120.0), delay=0.02)) is grid
+
+
+def test_aligned_to_onsets_is_a_no_op_without_usable_onsets():
+    beats = _beats(120.0)
+    grid = BeatGrid(bpm=120.0, beats_per_bar=4, first_downbeat=1.0, beats=beats)
+    assert grid.aligned_to_onsets([]) is grid
+    assert grid.aligned_to_onsets([0.5, 1.0, 1.5]) is grid
 
 
 class _FakeMidi:

@@ -24,8 +24,14 @@ def notes_to_midi(
     `grid` is a detected beat grid (see muscriptor.utils.beats): it supplies the
     tempo, the time signature and a delay that puts bar lines on real downbeats.
     Defaults to PLACEHOLDER_GRID.
+
+    A grid detected from audio is first moved onto `notes` themselves
+    (BeatGrid.aligned_to_onsets), which corrects for these onsets landing a few
+    milliseconds after the beats tracked on the same recording.
     """
-    beat_grid = beat_grid or PLACEHOLDER_GRID
+    beat_grid = (beat_grid or PLACEHOLDER_GRID).aligned_to_onsets(
+        [note.onset for note in notes]
+    )
     return note_event2midi(
         note2note_event(notes),
         output_file=None,
