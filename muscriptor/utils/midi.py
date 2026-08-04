@@ -1,7 +1,5 @@
 """MIDI output utilities."""
 
-from pathlib import Path
-
 from muscriptor.tokenizer.notes import Note, note2note_event, note_event2midi
 from muscriptor.utils.beats import BeatGrid
 
@@ -41,20 +39,3 @@ def notes_to_midi(
         beats_per_bar=beat_grid.beats_per_bar,
         offset_s=beat_grid.bar_offset(),
     )
-
-
-def save_midi(
-    notes: list[Note],
-    path: str | Path,
-    velocity: int = 100,
-    program_names: dict[int, str] | None = None,
-    beat_grid: BeatGrid | None = None,
-) -> None:
-    """Save a list of Note objects as a MIDI file."""
-    midi = notes_to_midi(
-        notes,
-        velocity=velocity,
-        program_names=program_names,
-        beat_grid=beat_grid,
-    )
-    midi.save(str(path))

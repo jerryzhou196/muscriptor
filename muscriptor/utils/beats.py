@@ -44,16 +44,6 @@ BAR_OFFSET_MARKER = "muscriptor:bar_offset="
 # Candidate grids, binary and triplet divisions of the beat, simplest first.
 ONSET_SUBDIVISIONS = (1, 2, 3, 4, 6, 8, 12, 16, 24)
 
-# Accept a simpler grid whose concentration is within this much of the best one:
-# |R| climbs again on every grid that merely contains a coarser one, and the
-# coarser one is the honest description of where the onsets are.
-CONCENTRATION_SLACK = 0.95
-
-# The angle only pins the offset down modulo one subdivision, so half a
-# subdivision is the largest delay it can express; grids finer than this could
-# not hold the delay unambiguously and are not considered.
-MIN_HALF_SUBDIVISION_S = 0.03
-
 # Below this resultant length the onsets are not really on the chosen grid, and
 # its angle means nothing.
 MIN_ONSET_CONCENTRATION = 0.25
@@ -64,13 +54,12 @@ MIN_ONSET_CONCENTRATION = 0.25
 # sparse music.
 MIN_ONSETS = 100
 
-# Offsets larger than this are refused as a bad grid fit rather than a real
-# delay. Over the 353 songs of the sweep where this is readable at all the
-# measurement runs +6.7 ms at the median, quartiles +0.7 and +12.3 ms, 99th
-# percentile +25 ms, so nothing past 40 ms is the delay this is meant to correct;
-# what does produce such numbers is a mis-chosen coarse grid, whose angle can
-# come out anywhere.
-MAX_ONSET_OFFSET_S = 0.04
+# The largest delay this is meant to correct.
+# Trade-off: we want to correct larger offsets if they happen, but a smaller value
+# allows us to use smaller grids like 1/16th notes (depends also on the tempo).
+# This is because if a grid has 20ms, we can't distinguish between a +15ms and -ms
+# offset since things are cyclical, unless we have a max offset of <15ms
+MAX_ONSET_OFFSET_S = 0.025
 
 # Note onset times in seconds, however the caller happens to hold them.
 Onsets = Sequence[float] | np.ndarray
@@ -151,7 +140,7 @@ class BeatGrid:
         """
         if self.beats is None:
             return self
-        measured = measure_onset_offset(onsets, self.beats)
+        measured = measure_onset_offset(onsets, self)
         if measured is None:
             return self
         logger.info(
@@ -199,7 +188,11 @@ def onset_phase(onsets: Onsets, beats: np.ndarray) -> np.ndarray:
 def phase_resultant(
     phase_beats: np.ndarray, subdivision: int
 ) -> tuple[float, float, float]:
-    """(concentration, offset_beats, sem_beats) of onset phase on a 1/s grid."""
+    """Compute the average of unit vectors (phase_beats) on a circle.
+    
+    The angle tells us the mean offset, and the magnitude tells us how well they align
+    (the concentration).
+    """
     angles = 2 * np.pi * np.mod(phase_beats * subdivision, 1.0)
     mean = np.exp(1j * angles).mean()
     concentration, theta = float(np.abs(mean)), float(np.angle(mean))
@@ -211,27 +204,21 @@ def phase_resultant(
     return concentration, theta * turns, spread / concentration * turns
 
 
-def measure_onset_offset(onsets: Onsets, beats: np.ndarray) -> OnsetOffset | None:
+def measure_onset_offset(onsets: Onsets, grid: "BeatGrid") -> OnsetOffset | None:
     """How late `onsets` sit against the beat subdivision they are on.
 
-    The grid is chosen per transcription: the simplest of ONSET_SUBDIVISIONS
-    whose concentration is within CONCENTRATION_SLACK of the best-scoring one.
-    Phase is measured within the beat rather than the bar, because trackers pin
-    beats down far better than bars, and the answer is the same either way — a
-    constant offset of every beat is a constant offset of every bar line.
-
-    Returns None when the onsets cannot say anything: fewer than MIN_ONSETS of
-    them on the tracked span, no grid coarse enough to express the offset, a
-    concentration below MIN_ONSET_CONCENTRATION (the onsets are not on a
-    subdivision), or an offset past MAX_ONSET_OFFSET_S (the grid is a bad fit).
+    Algorithm: For each onset, plot it as a unit vector on a circle where the angle is
+    its relative position in the beat. Then take the average of these vectors: the
+    angle tells you the average offset and the magnitude says how well they align.
+    In practice, the onsets are on a subdivision of the beat (e.g. 8th notes) so 
+    also repeat this for different subdivisions and pick the one where the notes align
+    the best to read the alignment from.
     """
-    if len(beats) < 2:
+    if grid.beats is None or len(grid.beats) < 2:
         return None
-    # Mean spacing, not the median inter-beat interval: on the tracker's 20 ms
-    # frame grid the median snaps to whole frames.
-    period_s = (beats[-1] - beats[0]) / (len(beats) - 1)
+    period_s = 60.0 / grid.bpm
 
-    phase_beats = onset_phase(onsets, beats)
+    phase_beats = onset_phase(onsets, grid.beats)
     if len(phase_beats) < MIN_ONSETS:
         logger.info(
             "not correcting the downbeat: %d onset time(s) on the tracked span, "
@@ -242,27 +229,28 @@ def measure_onset_offset(onsets: Onsets, beats: np.ndarray) -> OnsetOffset | Non
         return None
 
     candidates = [
-        s for s in ONSET_SUBDIVISIONS if period_s / (2 * s) >= MIN_HALF_SUBDIVISION_S
+        s for s in ONSET_SUBDIVISIONS if period_s / (2 * s) >= MAX_ONSET_OFFSET_S
     ]
     if not candidates:
-        # Only at an implausible tempo: even a whole beat is under 60 ms.
+        # Should not happen with reasonable tempos but guard it anyway
         logger.info("not correcting the downbeat: no grid coarse enough to fit")
         return None
+
     scored = {s: phase_resultant(phase_beats, s) for s in candidates}
-    best = max(concentration for concentration, _, _ in scored.values())
-    subdivision = next(
-        s for s in candidates if scored[s][0] >= CONCENTRATION_SLACK * best
-    )
+
+    # Keep the subdivision with the highest concentration
+    subdivision = max(scored, key=lambda s: scored[s][0])
     concentration, offset_beats, sem_beats = scored[subdivision]
 
     if concentration < MIN_ONSET_CONCENTRATION:
         logger.info(
             "not correcting the downbeat: onsets sit on no subdivision of the beat "
             "(best |R| = %.2f, need %.2f)",
-            best,
+            concentration,
             MIN_ONSET_CONCENTRATION,
         )
         return None
+
     offset_s = offset_beats * period_s
     if abs(offset_s) > MAX_ONSET_OFFSET_S:
         logger.warning(
@@ -273,6 +261,7 @@ def measure_onset_offset(onsets: Onsets, beats: np.ndarray) -> OnsetOffset | Non
             1000 * MAX_ONSET_OFFSET_S,
         )
         return None
+
     return OnsetOffset(
         offset_s=offset_s,
         sem_s=sem_beats * period_s,

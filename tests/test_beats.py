@@ -29,6 +29,16 @@ def _beats(bpm=120.0, n=64, start=0.0, drift=0.0):
     return t
 
 
+def _grid(beats, bpm, beats_per_bar=4):
+    """A BeatGrid over `beats`, as detect_grid would build it."""
+    return BeatGrid(
+        bpm=bpm,
+        beats_per_bar=beats_per_bar,
+        first_downbeat=float(beats[0]),
+        beats=beats,
+    )
+
+
 def _onsets(beats, subdivision=4, delay=0.0):
     """Onsets on every 1/subdivision of `beats`, `delay` seconds late."""
     fine = np.linspace(beats[0], beats[-1], (len(beats) - 1) * subdivision + 1)
@@ -106,7 +116,7 @@ def test_onset_phase_counts_each_onset_time_once():
 
 def test_measure_onset_offset_recovers_a_known_delay():
     beats = _beats(126.0)
-    measured = measure_onset_offset(_onsets(beats, delay=0.012), beats)
+    measured = measure_onset_offset(_onsets(beats, delay=0.012), _grid(beats, 126.0))
     assert measured is not None
     # 1 ms of slack for the millisecond rounding in onset_phase.
     assert abs(measured.offset_s - 0.012) < 0.001
@@ -116,23 +126,26 @@ def test_measure_onset_offset_recovers_a_known_delay():
 
 def test_measure_onset_offset_recovers_a_negative_delay():
     beats = _beats(126.0)
-    measured = measure_onset_offset(_onsets(beats, delay=-0.015), beats)
+    measured = measure_onset_offset(_onsets(beats, delay=-0.015), _grid(beats, 126.0))
     assert measured is not None
     assert abs(measured.offset_s + 0.015) < 0.001
 
 
-def test_measure_onset_offset_picks_the_simplest_fitting_grid():
-    """Eighth notes fit 1/8 and 1/16 grids equally; the eighth grid is the answer."""
+def test_measure_onset_offset_reads_sparse_onsets():
+    """Eighth notes fit the 1/2 grid and every multiple of it, all saying the same."""
     beats = _beats(120.0)
-    measured = measure_onset_offset(_onsets(beats, subdivision=2), beats)
+    measured = measure_onset_offset(
+        _onsets(beats, subdivision=2, delay=0.008), _grid(beats, 120.0)
+    )
     assert measured is not None
-    assert measured.subdivision == 2
+    assert measured.subdivision % 2 == 0
+    assert abs(measured.offset_s - 0.008) < 0.001
 
 
 def test_measure_onset_offset_needs_enough_onsets():
     beats = _beats(120.0)
     onsets = _onsets(beats, subdivision=1, delay=0.01)[: MIN_ONSETS - 1]
-    assert measure_onset_offset(onsets, beats) is None
+    assert measure_onset_offset(onsets, _grid(beats, 120.0)) is None
 
 
 def test_measure_onset_offset_rejects_onsets_off_the_grid():
@@ -140,7 +153,7 @@ def test_measure_onset_offset_rejects_onsets_off_the_grid():
     beats = _beats(120.0)
     rng = np.random.default_rng(0)
     onsets = rng.uniform(beats[0], beats[-1], 400)
-    assert measure_onset_offset(onsets, beats) is None
+    assert measure_onset_offset(onsets, _grid(beats, 120.0)) is None
 
 
 def test_measure_onset_offset_refuses_an_implausible_offset():
@@ -151,7 +164,7 @@ def test_measure_onset_offset_refuses_an_implausible_offset():
     """
     beats = _beats(60.0)
     onsets = _onsets(beats, subdivision=2, delay=1.5 * MAX_ONSET_OFFSET_S)
-    assert measure_onset_offset(onsets, beats) is None
+    assert measure_onset_offset(onsets, _grid(beats, 60.0)) is None
 
 
 def test_measure_onset_offset_reads_the_offset_modulo_one_subdivision():
@@ -160,10 +173,14 @@ def test_measure_onset_offset_reads_the_offset_modulo_one_subdivision():
     The phase angle wraps, so the correction can only ever be a fraction of a
     subdivision — it fixes where notes sit inside the beat, never which beat.
     """
-    beats = _beats(120.0)  # 1/4 beat = 125 ms on the grid chosen below
-    measured = measure_onset_offset(_onsets(beats, delay=0.125 + 0.01), beats)
+    beats = _beats(120.0)  # 1/4 beat = 125 ms, the spacing of the onsets below
+    measured = measure_onset_offset(
+        _onsets(beats, delay=0.125 + 0.01), _grid(beats, 120.0)
+    )
     assert measured is not None
-    assert measured.subdivision == 4
+    # A whole 125 ms subdivision of the delay is invisible; the 10 ms is what
+    # comes back. Any grid the onsets exactly fit reports the same, so which one
+    # is picked is not part of the answer.
     assert abs(measured.offset_s - 0.01) < 0.001
 
 
@@ -176,7 +193,8 @@ def test_measure_onset_offset_survives_beat_quantization():
     """
     exact = _beats(126.0, n=200)
     quantized = np.round(exact / 0.02) * 0.02
-    measured = measure_onset_offset(_onsets(exact, delay=0.010), quantized)
+    grid = _grid(quantized, fit_tempo(quantized)[0])  # bpm as detect_grid fits it
+    measured = measure_onset_offset(_onsets(exact, delay=0.010), grid)
     assert measured is not None
     assert abs(measured.offset_s - 0.010) < 0.003
     assert measured.sem_s < 0.003

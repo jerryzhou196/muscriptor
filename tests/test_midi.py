@@ -1,15 +1,12 @@
 """Tests for muscriptor/utils/midi.py."""
 
-import tempfile
-from pathlib import Path
-
 import numpy as np
 import pytest
 from mido import MidiFile
 
 from muscriptor.tokenizer.notes import Note
 from muscriptor.utils.beats import BAR_OFFSET_MARKER, BeatGrid, read_bar_offset
-from muscriptor.utils.midi import notes_to_midi, save_midi
+from muscriptor.utils.midi import notes_to_midi
 
 
 def _metas(midi, msg_type):
@@ -136,29 +133,3 @@ def test_bar_offset_marker_is_machine_readable():
     text = _metas(midi, "marker")[0].text
     assert text.startswith(BAR_OFFSET_MARKER)
     assert read_bar_offset(midi) > 0
-
-
-def test_save_midi_creates_file():
-    notes = _sample_notes()
-    with tempfile.TemporaryDirectory() as tmpdir:
-        path = Path(tmpdir) / "out.mid"
-        save_midi(notes, path)
-        assert path.exists()
-        assert path.stat().st_size > 0
-
-
-def test_save_midi_is_valid_midi():
-    notes = _sample_notes()
-    with tempfile.TemporaryDirectory() as tmpdir:
-        path = Path(tmpdir) / "out.mid"
-        save_midi(notes, path)
-        loaded = MidiFile(str(path))
-        assert len(loaded.tracks) > 0
-
-
-def test_save_midi_string_path():
-    notes = _sample_notes()
-    with tempfile.TemporaryDirectory() as tmpdir:
-        path = str(Path(tmpdir) / "out.mid")
-        save_midi(notes, path)
-        assert Path(path).exists()
