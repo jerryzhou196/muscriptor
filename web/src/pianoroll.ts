@@ -19,6 +19,20 @@ export interface RollNote {
   stackOffset?: number;
 }
 
+/** Constant-tempo grid detected by the backend (the `midi` event's `beat_grid`). */
+export interface BeatGrid {
+  bpm: number;
+  /** null when the meter is unknown — then only beat lines are drawn. */
+  beats_per_bar: number | null;
+  /** Time of the first detected bar line, in seconds of the original audio. */
+  first_downbeat: number;
+}
+
+/** Don't draw measure lines closer together than this (px) — double the spacing instead. */
+const MIN_BAR_PX = 40;
+/** Beat subdivisions are dropped below this spacing (px) rather than crowding the bars. */
+const MIN_BEAT_PX = 12;
+
 /** Reveal duration in ms — how long a note takes to grow to full width. */
 const REVEAL_MS = 280;
 
@@ -27,6 +41,40 @@ const NOTE_GAP_PX = 1.5;
 
 /** Upward nudge per overlapping same-pitch note drawn in front, so it peeks out. */
 const NOTE_STACK_PX = 1.5;
+
+/**
+ * Vertical time-grid lines in `[from, to]` seconds, `strong` for measure lines
+ * (bar lines, or plain seconds when no grid was detected) and weak for beat
+ * subdivisions. Bar lines are phase-locked to `first_downbeat` and extrapolated
+ * both ways, so the pickup before the first downbeat gets its lines too.
+ */
+export function timeGridLines(
+  grid: BeatGrid | null,
+  from: number,
+  to: number,
+  pxPerSec: number,
+): { t: number; strong: boolean }[] {
+  const beat = grid ? 60 / grid.bpm : 0;
+  // No meter detected: treat every beat as a measure line, there's nothing to
+  // subdivide. No grid at all: fall back to the one-second ruler.
+  const measure = grid ? (grid.beats_per_bar ?? 1) * beat : 1;
+  const phase = grid ? grid.first_downbeat : 0;
+  let step = measure;
+  while (step * pxPerSec < MIN_BAR_PX) step *= 2;
+  const lines: { t: number; strong: boolean }[] = [];
+  const push = (period: number, strong: boolean) => {
+    for (let k = Math.ceil((from - phase) / period); ; k++) {
+      const t = phase + k * period;
+      if (t > to) break;
+      if (t >= 0) lines.push({ t, strong });
+    }
+  };
+  // Beats only where they'd stay legible, and only if the bars didn't collapse
+  // onto them (step > beat).
+  if (grid && step > beat && beat * pxPerSec >= MIN_BEAT_PX) push(beat, false);
+  push(step, true);
+  return lines;
+}
 
 /** Ease-out cubic: fast start, slowing as it reaches the end. */
 function easeOut(t: number): number {
@@ -169,6 +217,8 @@ export class PianoRoll {
   private pitchTop = DEFAULT_PITCH_TOP;
   /** Loaded audio length in seconds; caps how far the time axis can scroll. */
   private contentDuration = 0;
+  /** Detected beat grid; null until the final `midi` event arrives (then: seconds grid). */
+  private beatGrid: BeatGrid | null = null;
 
   get pxPerSec(): number {
     return this._pxPerSec;
@@ -233,6 +283,16 @@ export class PianoRoll {
     this.playhead = seconds;
   }
 
+  /**
+   * Switch the time grid from seconds to bars/beats. Note times are untouched:
+   * the grid is drawn in original-audio time, so 0s stays at 0s and the first
+   * bar line lands on the detected downbeat (with earlier bar lines extrapolated
+   * backwards). null keeps the seconds grid.
+   */
+  setBeatGrid(grid: BeatGrid | null) {
+    this.beatGrid = grid;
+  }
+
   /** Tell the roll the loaded audio length, which bounds the time-axis scroll. */
   setDuration(seconds: number) {
     this.contentDuration = seconds;
@@ -278,6 +338,7 @@ export class PianoRoll {
     this.pxPerPitch = null;
     this.pitchTop = DEFAULT_PITCH_TOP;
     this.contentDuration = 0;
+    this.beatGrid = null;
   }
 
   /**
@@ -505,18 +566,26 @@ export class PianoRoll {
       }
     }
 
-    // Time grid: vertical lines every second.
+    // Time grid: bar (and beat) lines once the tempo is known, else every second.
     ctx.strokeStyle = palette().grid;
     ctx.lineWidth = 1;
-    const startSec = Math.floor(offsetSec);
-    const endSec = Math.ceil(offsetSec + viewSec);
-    for (let s = startSec; s <= endSec; s++) {
-      const x = KEY_WIDTH + (s - offsetSec) * pxPerSec;
+    const vline = (t: number) => {
+      const x = KEY_WIDTH + (t - offsetSec) * pxPerSec;
       ctx.beginPath();
       ctx.moveTo(x + 0.5, 0);
       ctx.lineTo(x + 0.5, H);
       ctx.stroke();
+    };
+    for (const line of timeGridLines(
+      this.beatGrid,
+      offsetSec,
+      offsetSec + viewSec,
+      pxPerSec,
+    )) {
+      ctx.globalAlpha = line.strong ? 1 : 0.4;
+      vline(line.t);
     }
+    ctx.globalAlpha = 1;
 
     // Transcribed-so-far overlay: a faint light wash over the [0, t) time span
     // the backend has already processed. The frontier is the furthest of the

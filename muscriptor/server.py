@@ -5,7 +5,8 @@ or any format soundfile/libsndfile can read — mp3, flac, ogg, m4a, …) return
 `text/event-stream`. Each event's data is a JSON dict tagged by `type`:
 `start` / `end` note events (same shape as `muscriptor.main._event_to_dict`),
 `progress` chunk anchors (`{completed, total}`), and a final `midi` event
-carrying the base64-encoded .mid file.
+carrying the base64-encoded .mid file plus the detected `beat_grid`
+(`{bpm, beats_per_bar, first_downbeat}`, or null if no tempo was found).
 
 POST /transcribe/midi takes the same upload but blocks until transcription
 completes and returns the raw `audio/midi` bytes directly (no SSE, no
@@ -263,7 +264,15 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
                 grid = model.detect_beat_grid_for((wav, sr), detect_tempo)
                 midi_bytes = model.events_to_midi_bytes(iter(events), beat_grid=grid)
                 midi_b64 = base64.b64encode(midi_bytes).decode("ascii")
-                payload = json.dumps({"type": "midi", "data": midi_b64})
+                # The grid rides along so the UI can draw bar lines instead of a
+                # fixed seconds grid; null when no tempo was detected.
+                payload = json.dumps(
+                    {
+                        "type": "midi",
+                        "data": midi_b64,
+                        "beat_grid": dataclasses.asdict(grid) if grid else None,
+                    }
+                )
                 yield f"data: {payload}\n\n"
             finally:
                 release_lock()

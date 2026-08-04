@@ -3,7 +3,7 @@ import { streamTranscribeWithRetry, TranscribeError } from "../sse";
 import { track } from "../analytics";
 import type { AudioEngine } from "../audio";
 import type { ProgressEstimator } from "../progress";
-import { PianoRoll, type RollNote } from "../pianoroll";
+import { PianoRoll, type BeatGrid, type RollNote } from "../pianoroll";
 
 type StartEvent = {
   type: "start";
@@ -20,6 +20,7 @@ type EndEvent = {
 type MidiEvent = {
   type: "midi";
   data: string; // base64-encoded .mid file
+  beat_grid: BeatGrid | null; // null when no constant tempo was detected
 };
 type ProgressMsg = {
   type: "progress";
@@ -228,6 +229,8 @@ export function useTranscription(deps: TranscriptionDeps) {
         if (ev.type === "midi") {
           // Final event: the assembled MIDI file. Enables the download button.
           setMidi(ev.data);
+          // Tempo came with it — redraw the time grid as bars instead of seconds.
+          rollRef.current?.setBeatGrid(ev.beat_grid ?? null);
           continue;
         }
         if (ev.type === "progress") {

@@ -39,6 +39,15 @@ def test_notes_to_midi_custom_tempo():
     assert _metas(midi, "set_tempo")[0].tempo == round(60_000_000 / 90)
 
 
+def test_every_note_track_repeats_the_tempo():
+    """MuseScore ignores set_tempo in a note-less conductor track."""
+    grid = BeatGrid(bpm=90, beats_per_bar=None, first_downbeat=0.0)
+    midi = notes_to_midi(_sample_notes(), beat_grid=grid)
+    for track in midi.tracks[1:]:
+        tempos = [m for m in track if m.type == "set_tempo"]
+        assert [m.tempo for m in tempos] == [round(60_000_000 / 90)]
+
+
 def test_notes_to_midi_empty_notes():
     midi = notes_to_midi([])
     assert isinstance(midi, MidiFile)
