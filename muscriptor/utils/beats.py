@@ -1,7 +1,9 @@
 """Beat-grid detection, for writing real tempo and time signatures into MIDI."""
 
+import dataclasses
 import logging
-from dataclasses import dataclass
+import math
+from collections.abc import Sequence
 from typing import Literal
 
 import numpy as np
@@ -22,6 +24,30 @@ MIN_BEATS = 8
 # Marker text prefix recording how far notes were delayed to align bar lines,
 # so `/auralize` can line the synthesis back up with the original audio.
 BAR_OFFSET_MARKER = "muscriptor:bar_offset="
+
+### Constants for estimate_onset_delay()
+
+# Candidate grids, binary and triplet divisions of the beat, simplest first.
+ONSET_SUBDIVISIONS = (1, 2, 3, 4, 6, 8, 12, 16, 24)
+
+# Discard detections with a concentration lower than this. On our test set, 92% songs
+# are above 0.5
+MIN_ONSET_CONCENTRATION = 0.5
+
+# |R| for n random angles is about 1/sqrt(n). With MIN_ONSETS = 40 the chance of 
+# passing the bar with a random distribution is about 1 in 5,000.
+MIN_ONSETS = 40
+
+# The largest delay this is meant to correct.
+# Trade-off: we want to correct larger offsets if they happen, but a smaller value
+# allows us to use smaller grids like 1/16th notes (depends also on the tempo).
+# This is because if a grid has 20ms, we can't distinguish between a +15ms and -5ms
+# offset since things are cyclical, unless we have a max offset of <15ms.
+# With 0.04 we can do 16th notes up to 187 BPM.
+MAX_ONSET_DELAY_S = 0.04
+
+# Note onset times in seconds, however the caller happens to hold them.
+Onsets = Sequence[float] | np.ndarray
 
 
 class BeatDetectionError(RuntimeError):
@@ -46,7 +72,7 @@ def read_bar_offset(midi) -> float:
     return 0.0
 
 
-@dataclass
+@dataclasses.dataclass
 class BeatGrid:
     """A constant-tempo beat grid detected from audio."""
 
@@ -55,6 +81,18 @@ class BeatGrid:
     beats_per_bar: int | None
     # Time of the first detected bar line, in seconds.
     first_downbeat: float
+    # The individual beat times the grid was fitted to, kept for
+    # `with_onset_delay`, which needs them rather than the fitted tempo: the
+    # tracked beats follow the recording's small tempo wobbles, and those are the
+    # same size as the offset being measured. None for a hand-built grid; kept
+    # out of equality and repr, being an array and an implementation detail.
+    beats: np.ndarray | None = dataclasses.field(
+        default=None, repr=False, compare=False
+    )
+    # Seconds by which the transcribed onsets are late against these beats, or None
+    # until some notes have been measured against the grid (see `with_onset_delay`).
+    # Whoever writes the notes out subtracts it from them.
+    onset_delay: float | None = None
 
     @property
     def bar_seconds(self) -> float | None:
@@ -62,18 +100,164 @@ class BeatGrid:
             return None
         return self.beats_per_bar * 60.0 / self.bpm
 
-    def bar_offset(self) -> float:
+    def bar_offset(self, min_shift: float = 0.0) -> float:
         """Seconds to delay every note so bar lines land on downbeats.
 
         MIDI has no pickup measure: bar 1 starts at tick 0, so the only way to
         put a bar line on the first downbeat is to shift the music later. Always
         a forward shift, keeping ticks non-negative and dropping no notes; the
         leading partial bar holds whatever preceded the first downbeat.
+
+        Whole bars are added until the shift reaches `min_shift`, so a caller
+        that moved the notes earlier (by `onset_delay`) still gets non-negative
+        ticks without having to squash the notes near the start.
         """
-        bar = self.bar_seconds
-        if bar is None:
-            return 0.0
-        return (bar - self.first_downbeat % bar) % bar
+        step = self.bar_seconds
+        if step is None:
+            # No meter to align to, so the only reason to shift is the headroom;
+            # do it in whole beats, which are all this grid has.
+            step, offset = 60.0 / self.bpm, 0.0
+        else:
+            offset = (step - self.first_downbeat % step) % step
+        if offset < min_shift:
+            offset += step * math.ceil((min_shift - offset) / step)
+        return offset
+
+    def with_onset_delay(self, onsets: Onsets) -> "BeatGrid":
+        """This grid with `onsets`' lag against it measured and filled in.
+
+        Subtracting that lag from the note times moves them onto the beats. We
+        trust the beats tracked by beat_this over the transcription - they're a bit
+        more accurate based on our measurements. 0.0 when there is nothing to
+        measure from; see estimate_onset_delay() for details.
+
+        Measuring once and carrying the answer around is what keeps the MIDI file
+        and the UI (which is told the same number) shifting by the same amount.
+        """
+        measured = None
+        if self.beats is not None:
+            measured = estimate_onset_delay(onsets, self)
+        if measured is None:
+            return dataclasses.replace(self, onset_delay=0.0)
+        logger.info(
+            "onsets sit %+.1f ms off a 1/%d-beat grid (|R| = %.2f over %d "
+            "onsets); moving the notes back by that much",
+            1000 * measured.seconds,
+            measured.subdivision,
+            measured.concentration,
+            measured.n_onsets,
+        )
+        return dataclasses.replace(self, onset_delay=measured.seconds)
+
+
+@dataclasses.dataclass(frozen=True)
+class OnsetDelay:
+    """How late a set of note onsets sits against the beat subdivision it is on."""
+
+    # Signed seconds, positive when the onsets are late.
+    seconds: float
+    # Resultant length in [0, 1]: how tightly the onsets sit on the grid.
+    concentration: float
+    # Subdivisions per beat of the grid the delay is measured against.
+    subdivision: int
+    # Distinct onset times that went into it.
+    n_onsets: int
+
+
+def get_onsets_phase(onsets: Onsets, beats: np.ndarray) -> np.ndarray:
+    """Onset times as positions in continuous beats.
+
+    Onsets outside the tracked span drop out, since there is no beat to place
+    them in. One entry per distinct onset time (to the millisecond) rather than
+    per note, so a six-note chord does not outvote six single notes elsewhere.
+    """
+    times = np.unique(np.round(np.asarray(onsets, dtype=float), 3))
+    inside = (times >= beats[0]) & (times <= beats[-1])
+    return np.interp(times[inside], beats, np.arange(len(beats)))
+
+
+def get_phase_with_subdivision(
+    phase_beats: np.ndarray, subdivision: int
+) -> tuple[float, float]:
+    """Compute the average of unit vectors (phase_beats) on a circle.
+
+    The angle tells us the mean offset, and the magnitude tells us how well they align
+    (the concentration).
+    """
+    angles = 2 * np.pi * np.mod(phase_beats * subdivision, 1.0)
+    mean = np.exp(1j * angles).mean()
+    turns = 1 / (2 * np.pi * subdivision)  # radians on the fine grid → beats
+    return float(np.abs(mean)), float(np.angle(mean)) * turns
+
+
+def estimate_onset_delay(onsets: Onsets, grid: "BeatGrid") -> OnsetDelay | None:
+    """How late `onsets` sit against the beat subdivision they are on.
+
+    This is to correct for the fact that we observed that the detected onsets don't
+    always align well with the beats.
+
+    Algorithm: For each onset, plot it as a unit vector on a circle where the angle is
+    its relative position in the beat. Then take the average of these vectors: the
+    angle tells you the average offset and the magnitude says how well they align.
+    In practice, the onsets are on a subdivision of the beat (e.g. 8th notes) so
+    also repeat this for different subdivisions and pick the one where the notes align
+    the best to read the alignment from.
+    """
+    if grid.beats is None or len(grid.beats) < 2:
+        return None
+    period_s = 60.0 / grid.bpm
+
+    # The phases relative to full beats
+    phase_beats = get_onsets_phase(onsets, grid.beats)
+    if len(phase_beats) < MIN_ONSETS:
+        logger.info(
+            "not correcting the downbeat: %d onset time(s) on the tracked span, "
+            "need %d",
+            len(phase_beats),
+            MIN_ONSETS,
+        )
+        return None
+
+    candidates = [
+        s for s in ONSET_SUBDIVISIONS if period_s / (2 * s) >= MAX_ONSET_DELAY_S
+    ]
+    if not candidates:
+        # Should not happen with reasonable tempos but guard it anyway
+        logger.info("not correcting the downbeat: no grid coarse enough to fit")
+        return None
+
+    scored = {s: get_phase_with_subdivision(phase_beats, s) for s in candidates}
+
+    # Keep the subdivision with the highest concentration
+    subdivision = max(scored, key=lambda s: scored[s][0])
+    concentration, delay_beats = scored[subdivision]
+
+    if concentration < MIN_ONSET_CONCENTRATION:
+        logger.info(
+            "not correcting the downbeat: onsets sit on no subdivision of the beat "
+            "(best |R| = %.2f, need %.2f)",
+            concentration,
+            MIN_ONSET_CONCENTRATION,
+        )
+        return None
+
+    delay_s = delay_beats * period_s
+    if abs(delay_s) > MAX_ONSET_DELAY_S:
+        logger.warning(
+            "not correcting the downbeat: onsets measured %+.0f ms off a "
+            "1/%d-beat grid, further than the %+.0f ms this can plausibly be",
+            1000 * delay_s,
+            subdivision,
+            1000 * MAX_ONSET_DELAY_S,
+        )
+        return None
+
+    return OnsetDelay(
+        seconds=delay_s,
+        concentration=concentration,
+        subdivision=subdivision,
+        n_onsets=len(phase_beats),
+    )
 
 
 def fit_tempo(beats: np.ndarray) -> tuple[float, float]:
@@ -175,4 +359,9 @@ def detect_grid(
         first_downbeat,
         residual * 1000,
     )
-    return BeatGrid(bpm=bpm, beats_per_bar=beats_per_bar, first_downbeat=first_downbeat)
+    return BeatGrid(
+        bpm=bpm,
+        beats_per_bar=beats_per_bar,
+        first_downbeat=first_downbeat,
+        beats=beats,
+    )

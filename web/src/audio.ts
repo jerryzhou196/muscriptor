@@ -311,6 +311,22 @@ export class AudioEngine {
     this.scheduleNoteRaw(opts);
   }
 
+  /**
+   * Move every note by `seconds`, re-scheduling what hasn't played yet. Used to
+   * take out the lag the transcribed onsets carry against the detected beats,
+   * once the beat grid arrives at the end of the stream.
+   */
+  shiftNotes(seconds: number) {
+    if (!seconds) return;
+    for (const n of [...this.allNotes, ...this.pendingNotes]) {
+      n.start += seconds;
+      n.end += seconds;
+    }
+    // Queued scheduleOnce callbacks are one-shot and hold the old times; seeking
+    // to where we already are cancels and re-schedules them from the new ones.
+    this.seek(Tone.getTransport().seconds);
+  }
+
   private scheduleNoteRaw(opts: NoteOpts) {
     if (!this.synth) {
       this.pendingNotes.push(opts);

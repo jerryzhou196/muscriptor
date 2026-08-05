@@ -380,9 +380,13 @@ def serve(
     ] = None,
 ):
     """Run the HTTP transcription server (POST /transcribe → SSE event stream)."""
+    import logging
+
     import uvicorn
 
     from muscriptor.server import create_app
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     _device = None if device == "auto" else device
     typer.echo("Loading model…")

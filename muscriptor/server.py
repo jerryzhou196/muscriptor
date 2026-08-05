@@ -4,8 +4,12 @@ POST /transcribe with an audio file (multipart/form-data field `file`; WAV,
 or any format soundfile/libsndfile can read — mp3, flac, ogg, m4a, …) returns
 `text/event-stream`. Each event's data is a JSON dict tagged by `type`:
 `start` / `end` note events (same shape as `muscriptor.main._event_to_dict`),
-`progress` chunk anchors (`{completed, total}`), and a final `midi` event
-carrying the base64-encoded .mid file.
+`progress` chunk anchors (`{completed, total}`), and a final
+`transcription_complete` event carrying the base64-encoded .mid file (`data`)
+plus the detected `beat_grid`
+(`{bpm, beats_per_bar, first_downbeat, onset_delay}`, or null if no tempo was
+found). `onset_delay` is how late the streamed note times are against those
+beats: the MIDI has it taken out already, an SSE consumer has to subtract it.
 
 POST /transcribe/midi takes the same upload but blocks until transcription
 completes and returns the raw `audio/midi` bytes directly (no SSE, no
@@ -261,9 +265,40 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
                 # Detect tempo/meter only now: it costs a few seconds of CPU and
                 # nothing before this point needs it, so the notes stream first.
                 grid = model.detect_beat_grid_for((wav, sr), detect_tempo)
+                # Measure the onset lag up here rather than leaving it to the MIDI
+                # writing, since the UI has to be told the very same number to move
+                # the notes it already drew.
+                if grid:
+                    grid = grid.with_onset_delay(
+                        [
+                            ev.start_time
+                            for ev in events
+                            if isinstance(ev, NoteStartEvent)
+                        ]
+                    )
                 midi_bytes = model.events_to_midi_bytes(iter(events), beat_grid=grid)
                 midi_b64 = base64.b64encode(midi_bytes).decode("ascii")
-                payload = json.dumps({"type": "midi", "data": midi_b64})
+                # The grid rides along so the UI can draw bar lines instead of a
+                # fixed seconds grid; null when no tempo was detected.
+                payload = json.dumps(
+                    {
+                        "type": "transcription_complete",
+                        "data": midi_b64,
+                        # Only the fields the UI draws with; `grid.beats` is an
+                        # ndarray and not JSON-serializable anyway.
+                        "beat_grid": {
+                            "bpm": grid.bpm,
+                            "beats_per_bar": grid.beats_per_bar,
+                            "first_downbeat": grid.first_downbeat,
+                            # Seconds the streamed note times sit late against
+                            # the beats; the MIDI already has it taken out, the
+                            # UI has to subtract it from the notes it drew.
+                            "onset_delay": grid.onset_delay,
+                        }
+                        if grid
+                        else None,
+                    }
+                )
                 yield f"data: {payload}\n\n"
             finally:
                 release_lock()

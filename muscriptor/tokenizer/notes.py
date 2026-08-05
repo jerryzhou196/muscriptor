@@ -347,6 +347,9 @@ def note_event2midi(
                 gm_program = ne.program
             program_to_channel[key] = ne_channel
             track.append(MetaMessage("track_name", name=name, time=0))
+            # MuseScore ignores set_tempo in a conductor track that has no notes,
+            # so repeat it here. Harmless for hosts that read the meta track.
+            track.append(MetaMessage("set_tempo", tempo=tempo, time=0))
             track.append(
                 Message(
                     "program_change", program=gm_program, time=0, channel=ne_channel

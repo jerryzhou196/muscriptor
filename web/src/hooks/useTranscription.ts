@@ -1,9 +1,14 @@
-import { useRef, type Dispatch, type RefObject, type SetStateAction } from "react";
+import {
+  useRef,
+  type Dispatch,
+  type RefObject,
+  type SetStateAction,
+} from "react";
 import { streamTranscribeWithRetry, TranscribeError } from "../sse";
 import { track } from "../analytics";
 import type { AudioEngine } from "../audio";
 import type { ProgressEstimator } from "../progress";
-import { PianoRoll, type RollNote } from "../pianoroll";
+import { PianoRoll, type BeatGrid, type RollNote } from "../pianoroll";
 
 type StartEvent = {
   type: "start";
@@ -17,16 +22,18 @@ type EndEvent = {
   end_time: number;
   start_event_index: number;
 };
-type MidiEvent = {
-  type: "midi";
+type TranscriptionCompleteEvent = {
+  type: "transcription_complete";
   data: string; // base64-encoded .mid file
+  beat_grid: BeatGrid | null; // null when no constant tempo was detected
 };
 type ProgressMsg = {
   type: "progress";
   completed: number; // chunks transcribed so far
   total: number; // total chunks
 };
-type StreamedEvent = StartEvent | EndEvent | MidiEvent | ProgressMsg;
+type StreamedEvent =
+  StartEvent | EndEvent | TranscriptionCompleteEvent | ProgressMsg;
 
 export type AppState = "idle" | "transcribing" | "done" | "error";
 
@@ -225,9 +232,14 @@ export function useTranscription(deps: TranscriptionDeps) {
         // it can't repopulate the piano roll / re-schedule old notes.
         if (isStale()) return;
         const ev = raw as StreamedEvent;
-        if (ev.type === "midi") {
+        if (ev.type === "transcription_complete") {
           // Final event: the assembled MIDI file. Enables the download button.
           setMidi(ev.data);
+          // Tempo came with it — redraw the time grid as bars instead of seconds,
+          // and move the notes onto the beats (the MIDI above already has them
+          // there), in the roll and in the scheduled playback alike.
+          rollRef.current?.setBeatGrid(ev.beat_grid ?? null);
+          audio.shiftNotes(-(ev.beat_grid?.onset_delay ?? 0));
           continue;
         }
         if (ev.type === "progress") {
