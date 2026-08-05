@@ -1325,7 +1325,7 @@ wheels = [
 
 [[package]]
 name = "muscriptor"
-version = "0.2.2"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "beat-this" },
