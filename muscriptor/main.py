@@ -17,6 +17,13 @@ from muscriptor.tokenizer.mt3 import (
 from muscriptor.transcription_model import TranscriptionModel
 from muscriptor.utils.beats import BeatDetectionError, TempoDetection
 from muscriptor.utils.download import ModelDownloadError
+from muscriptor.utils.sheets import (
+    MuseScoreError,
+    MuseScoreNotFoundError,
+    find_musescore,
+    prepare_output_dir,
+    write_sheets,
+)
 
 app = typer.Typer(add_completion=False, help="muscriptor — audio-to-MIDI transcription")
 
@@ -39,6 +46,22 @@ class OutputFormat(str, Enum):
     midi = "midi"
     json = "json"
     jsonl = "jsonl"
+    sheets = "sheets"
+
+
+def _transcribe_to_midi(model, kwargs: dict, detect_tempo: str) -> bytes:
+    """transcribe_to_midi with the CLI's --detect-tempo spelling and error text."""
+    try:
+        mode: TempoDetection = {
+            "true": True,
+            "false": False,
+            "best-effort": "best-effort",
+        }[detect_tempo]
+        return model.transcribe_to_midi(**kwargs, detect_tempo=mode)
+    except BeatDetectionError as e:
+        typer.echo(f"Error: {e}", err=True)
+        typer.echo("Pass --detect-tempo best-effort or false to continue.", err=True)
+        raise typer.Exit(1)
 
 
 def _event_to_dict(ev: NoteStartEvent | NoteEndEvent) -> dict:
@@ -64,7 +87,9 @@ def transcribe(
             help=(
                 "Output file path. Use '-' to write to stdout (all progress / "
                 "timing info is sent to stderr in that case). "
-                "Default: <audio_file>.<ext> where ext matches --format."
+                "Default: <audio_file>.<ext> where ext matches --format. "
+                "With --format sheets this is a directory instead: it must be "
+                "empty or not exist yet, and is created if missing."
             ),
         ),
     ] = None,
@@ -75,7 +100,9 @@ def transcribe(
             "-f",
             help=(
                 "Output format: midi (default), json (single array of events), "
-                "or jsonl (one event per line, streamed as transcription progresses)"
+                "jsonl (one event per line, streamed as transcription "
+                "progresses), or sheets (a directory of engraved PDFs plus "
+                "MusicXML and MIDI; requires MuseScore to be installed)"
             ),
             case_sensitive=False,
         ),
@@ -242,12 +269,32 @@ def transcribe(
     is_stdout = output is not None and str(output) == "-"
 
     if output is None:
-        suffix = {
-            OutputFormat.midi: ".mid",
-            OutputFormat.json: ".json",
-            OutputFormat.jsonl: ".jsonl",
-        }[format]
-        output = audio_file.with_suffix(suffix)
+        if format == OutputFormat.sheets:
+            output = audio_file.parent / f"{audio_file.stem}_sheets"
+        else:
+            suffix = {
+                OutputFormat.midi: ".mid",
+                OutputFormat.json: ".json",
+                OutputFormat.jsonl: ".jsonl",
+            }[format]
+            output = audio_file.with_suffix(suffix)
+
+    if format == OutputFormat.sheets:
+        if is_stdout:
+            typer.echo(
+                "Error: --format sheets writes a directory, so it cannot write "
+                "to stdout. Pass a directory path with -o.",
+                err=True,
+            )
+            raise typer.Exit(1)
+        # Both checked before the model loads: transcribing a song takes long
+        # enough that discovering a missing MuseScore afterwards would sting.
+        try:
+            prepare_output_dir(output)
+            find_musescore()
+        except (ValueError, MuseScoreNotFoundError) as e:
+            typer.echo(f"Error: {e}", err=True)
+            raise typer.Exit(1)
 
     _device = None if device == "auto" else device
 
@@ -274,20 +321,19 @@ def transcribe(
         prelude_forcing=prelude_forcing,
     )
 
-    if format == OutputFormat.midi:
+    if format == OutputFormat.sheets:
+        midi_bytes = _transcribe_to_midi(model, kwargs, detect_tempo)
+        typer.echo(f"Engraving sheet music with MuseScore → {output} …", err=True)
         try:
-            mode: TempoDetection = {
-                "true": True,
-                "false": False,
-                "best-effort": "best-effort",
-            }[detect_tempo]
-            midi_bytes = model.transcribe_to_midi(**kwargs, detect_tempo=mode)
-        except BeatDetectionError as e:
+            written = write_sheets(midi_bytes, output)
+        except MuseScoreError as e:
             typer.echo(f"Error: {e}", err=True)
-            typer.echo(
-                "Pass --detect-tempo best-effort or false to continue.", err=True
-            )
             raise typer.Exit(1)
+        for path in written:
+            typer.echo(f"  {path.name}", err=True)
+        typer.echo(f"Saved {len(written)} files to {output}", err=True)
+    elif format == OutputFormat.midi:
+        midi_bytes = _transcribe_to_midi(model, kwargs, detect_tempo)
         if is_stdout:
             sys.stdout.buffer.write(midi_bytes)
             sys.stdout.buffer.flush()
@@ -386,7 +432,9 @@ def serve(
 
     from muscriptor.server import create_app
 
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
+    )
 
     _device = None if device == "auto" else device
     typer.echo("Loading model…")

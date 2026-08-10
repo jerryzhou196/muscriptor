@@ -280,6 +280,10 @@ muscriptor transcribe audio.wav --instruments acoustic_piano,drums
 # jsonl (one event per line, streamed while transcribing); -o - = stdout
 muscriptor transcribe audio.wav --format jsonl -o -
 
+# Engrave sheet music (see "Sheet music" below; needs MuseScore 4 installed).
+# -o is a directory here, and must be empty or not exist yet.
+muscriptor transcribe audio.wav --format sheets -o score/
+
 # Decoding options: temperature sampling, or beam search (slower, can be
 # more accurate)
 muscriptor transcribe audio.wav --sampling -t 0.8
@@ -298,6 +302,43 @@ muscriptor transcribe audio.wav -o out.mid --auralize check.wav
 ```
 
 See `muscriptor transcribe --help` for the full list of options.
+
+## Sheet music
+
+`--format sheets` engraves the transcription as readable notation instead of
+writing a single file. `-o` names a directory, which must be empty or not exist
+yet:
+
+```bash
+muscriptor transcribe audio.wav --format sheets -o score/
+```
+
+```
+score/
+├── score.mid                       the transcription, as MIDI
+├── score.musicxml                  the engraved score, as MusicXML
+├── full_score.pdf                  every instrument on one system
+├── 01_electric_guitar.pdf          one PDF per instrument …
+├── 01_electric_guitar_tab.pdf      … and a tablature PDF for fretted ones
+├── 02_electric_bass.pdf
+├── 02_electric_bass_tab.pdf
+└── 03_drum_kit.pdf
+```
+
+Guitar and bass get a tablature PDF alongside their notation, tuned from the
+instrument MuseScore matched to the transcribed part. Anything with 4–9 strings
+qualifies, so 5-string basses and 7-string guitars work too.
+
+This needs **MuseScore 4 or newer** installed separately. Downloads for every
+platform are at [musescore.org/en/download](https://musescore.org/en/download).
+
+Set `$MUSCRIPTOR_MUSESCORE` if it lives somewhere unusual. MuseScore 3 is
+rejected: it cannot produce the tablature.
+
+The tempo and time signature in the score are MuseScore's, not the ones
+muscriptor detects. Its MIDI importer runs its own beat tracking for
+unquantized input and ignores the file's `set_tempo` when it does, and there is
+no import option to hand it a beat grid.
 
 ## Web UI
 
