@@ -58,7 +58,7 @@ On Windows the default PyTorch backend is `cpu`, so the GPU needs
 after torch 2.2.2, which supports Python ≤ 3.12, so the Python version has to
 be pinned (if you install with pip/uv instead, use Python 3.10–3.12).
 
-### Web UI
+## Web UI
 
 You can host the web UI locally with:
 
@@ -68,7 +68,7 @@ uvx muscriptor serve
 
 This gives you the same UI as hosted on https://muscriptor.kyutai.org/, just with a different look.
 
-### Command-line interface (CLI)
+## Command-line interface (CLI)
 
 ```bash
 uvx muscriptor transcribe path/to/audio_file.wav
@@ -76,9 +76,36 @@ uvx muscriptor transcribe path/to/audio_file.wav
 
 See `--help` for all the options.
 
-### From Python
+### Sheet music
 
-with uv (recommended):
+Using the CLI with `--format sheets` engraves the transcription as readable notation instead of
+writing a single MIDI file.
+
+```bash
+muscriptor transcribe audio.wav --format sheets -o score/
+```
+
+The output structure looks like this:
+
+```
+score/
+├── score.mid                       the transcription, as MIDI
+├── score.musicxml                  the engraved score, as MusicXML
+├── full_score.pdf                  every instrument on one system
+├── 01_electric_guitar.pdf          one PDF per instrument …
+├── 01_electric_guitar_tab.pdf      … and a tablature PDF for fretted ones
+├── 02_electric_bass.pdf
+├── 02_electric_bass_tab.pdf
+└── 03_drum_kit.pdf
+```
+
+This needs **MuseScore 4 or newer** installed separately. Downloads for every
+platform are at [musescore.org/en/download](https://musescore.org/en/download).
+Set `$MUSCRIPTOR_MUSESCORE` if it lives somewhere unusual.
+
+## Using from Python
+
+MuScriptor is also on PyPI, so you can install it with with uv (recommended) or with pip:
 
 ```bash
 uv add muscriptor
@@ -87,6 +114,8 @@ uv add muscriptor
 ```bash
 pip install muscriptor
 ```
+
+Ask your coding agent to show you around the codebase.
 
 ## Models
 
