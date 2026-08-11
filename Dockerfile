@@ -59,8 +59,6 @@ RUN curl -fsSL -o /tmp/musescore.AppImage "$MUSESCORE_URL" \
     && QT_QPA_PLATFORM=offscreen MU_QT_QPA_PLATFORM=offscreen \
        /opt/musescore/AppRun --version
 
-# find_musescore() checks this before PATH, and the extracted AppRun is not on
-# PATH — without it the engraving endpoint reports MuseScore as missing.
 ENV MUSCRIPTOR_MUSESCORE=/opt/musescore/AppRun
 
 RUN --mount=type=cache,target=/root/.cache/uv \
