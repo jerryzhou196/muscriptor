@@ -82,7 +82,7 @@ Using the CLI with `--format sheets` engraves the transcription as readable nota
 writing a single MIDI file.
 
 ```bash
-muscriptor transcribe audio.wav --format sheets -o score/
+muscriptor transcribe audio.wav --format sheets --output score/
 ```
 
 The output structure looks like this:
@@ -132,55 +132,43 @@ weights are downloaded and cached automatically. The architecture is a transform
 
 `small` is the practical choice on CPU-only machines, `medium` is the default
 speed/accuracy trade-off, and `large` is the most accurate but really wants a
-GPU. On Apple Silicon the model runs on Metal (MPS) automatically, in float16
-by default (`--dtype float32` to override) — fast enough that `large`
-transcribes several times faster than real time. 
-
+GPU. On Apple Silicon the model runs on Metal (MPS) automatically.
 
 ## Developing
 
-### One-time setup
-
+To set up for development, get [uv](https://docs.astral.sh/uv/getting-started/installation/),
+clone this repo and run:
 ```bash
 uv sync
-cd web && pnpm install && pnpm run build && cd ..
 ```
 
-`pnpm run build` is required once — it outputs to `muscriptor/web_dist/`,
-which the FastAPI server auto-mounts if it exists (and which ships inside
-the PyPI wheel, so `uvx muscriptor serve` works without a checkout).
+For the web UI, you also need [pnpm](https://pnpm.io/installation) and Node
+(can be installed [via pnpm](https://pnpm.io/cli/runtime)).
+Then run:
 
-The soundfonts are not bundled: the server fetches
-`MuseScore_General.sf2` (215 MB, used by `/auralize`) and
-`MuseScore_General.sf3` (38 MB, the compressed build the UI plays) from
-[MuScriptor/assets](https://huggingface.co/MuScriptor/assets) on first use
-and caches them locally (see `muscriptor/soundfonts.py`).
+```bash
+cd web
+pnpm install
+pnpm run build
+```
+
+If you're not editing the frontend, you only need to do this once.
+If you are, run `pnpm dev` instead for a hot-reloading dev server.
+Start the backend alongside it with it using `uv run muscriptor serve --port 8222`
+and then open the frontend on http://localhost:5173/.
 
 ### Run
 
+After this setup, you can run Muscriptor from your local repository using
+`uv` (note - not `uvx` like before):
+
 ```bash
-uv run muscriptor serve \
-    --model medium \
-    --device cuda \
-    --host 0.0.0.0 \
-    --port 8222
+uv run muscriptor serve
+# or 
+uv run muscriptor transcribe path/to/audio_file.wav
 ```
 
-`--model` accepts a size keyword (`small`, `medium`, `large`) that downloads
-the matching variant from HuggingFace (cached under `~/.cache/muscriptor/`),
-a local safetensors path, or an `hf://` / `http(s)://` URL. It defaults to
-`medium` when omitted.
-
-Then open <http://127.0.0.1:8222/> (or the LAN address of the host) and drop
-a WAV onto the page.
-
-- Drop `--device cuda` if running CPU-only.
-- `--host 0.0.0.0` makes it reachable on the LAN; the default `127.0.0.1`
-  is local-only.
-- Playback runs a full SoundFont synthesizer ([SpessaSynth](https://github.com/spessasus/spessasynth_lib))
-  in the browser, fed with `MuseScore_General.sf3` — the same soundfont the
-  `/auralize` endpoint uses, served by the app itself from `/soundfonts/`
-  (cached server-side), no third-party CDN.
+Again, see `--help` for more options.
 
 ## License
 
@@ -191,7 +179,7 @@ The model weights, published on
 [CC BY-NC 4.0 license](https://creativecommons.org/licenses/by-nc/4.0/)
 (non-commercial use).
 
-The MuseScore General SoundFont downloaded for playback / auralization is
+The MuseScore General SoundFont downloaded for playback is
 distributed under its own (MIT) license.
 
 ## Citation
