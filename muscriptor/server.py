@@ -488,10 +488,6 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
         """
         midi_bytes = await midi.read()
 
-        # Deliberately unserialized, unlike /transcribe: engraving is a handful
-        # of short MuseScore processes (~96 MiB and a few seconds each), cheap
-        # enough that concurrent callers can just run, and it uses none of the
-        # GPU a transcription wants.
         try:
             zip_bytes = await asyncio.to_thread(engrave_to_zip, midi_bytes)
         except MuseScoreNotFoundError as e:
