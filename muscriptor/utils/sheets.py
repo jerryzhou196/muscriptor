@@ -52,7 +52,7 @@ _INSTALL_HINT = (
 )
 
 # MuseScore's MIDI import settings, passed with -M. HumanPerformance is the one
-# that matters: left off (its default), MuseScore assumes the file is already
+# that matters: by default, MuseScore assumes the file is already
 # quantized and engraves every millisecond of transcription jitter as 128th
 # notes tied together. The tuplet searches are off because a transcription's
 # timing noise reads as triplets often enough to be worse than useless.
