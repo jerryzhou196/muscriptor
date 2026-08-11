@@ -587,18 +587,22 @@ def test_sheets_missing_file(monkeypatch):
     assert client.post("/sheets").status_code == 422
 
 
-def test_sheets_refuses_a_second_concurrent_engrave(monkeypatch):
-    """One engrave at a time: a second caller is refused straight away rather
-    than holding a connection open for however long MuseScore takes."""
+def test_sheets_engraves_concurrently(monkeypatch):
+    """Engraving is not serialized: it costs a handful of short MuseScore
+    processes and none of the GPU, so a second caller runs straight away
+    instead of waiting for — or being refused because of — the first."""
     first_reached = threading.Event()
     gate = threading.Event()
+    calls = []
 
-    def blocking(midi_bytes, out_dir, musescore=None):
-        first_reached.set()
-        assert gate.wait(timeout=10), "gate never opened"
+    def blocks_the_first_caller(midi_bytes, out_dir, musescore=None):
+        calls.append(1)
+        if len(calls) == 1:
+            first_reached.set()
+            assert gate.wait(timeout=10), "gate never opened"
         return _fake_write_sheets(midi_bytes, out_dir)
 
-    monkeypatch.setattr(server_module, "write_sheets", blocking)
+    monkeypatch.setattr(server_module, "write_sheets", blocks_the_first_caller)
     app = create_app(make_model())
     files = {"midi": ("in.mid", FAKE_MIDI, "audio/midi")}
     out = {}
@@ -610,15 +614,11 @@ def test_sheets_refuses_a_second_concurrent_engrave(monkeypatch):
     a.start()
     assert first_reached.wait(timeout=5)
 
+    # The first engrave is still inside MuseScore at this point.
     started = time.monotonic()
-    resp = TestClient(app).post("/sheets", files=files)
-    assert resp.status_code == 503
-    assert time.monotonic() - started < 2.0  # refused, not queued
+    assert TestClient(app).post("/sheets", files=files).status_code == 200
+    assert time.monotonic() - started < 5.0, "second engrave waited on the first"
 
     gate.set()
     a.join(timeout=10)
     assert out["first"] == 200
-
-    # ...and the lock is free again once that engrave finished.
-    monkeypatch.setattr(server_module, "write_sheets", _fake_write_sheets)
-    assert TestClient(app).post("/sheets", files=files).status_code == 200

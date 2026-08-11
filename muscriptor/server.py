@@ -116,12 +116,6 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
     app = FastAPI(title="muscriptor")
 
     transcribe_lock = threading.Lock()
-    # Engraving is its own long CPU job (several MuseScore subprocesses per
-    # request), unrelated to the model, so it gets a lock of its own rather than
-    # queueing behind — or blocking — a transcription. One at a time, and a
-    # second caller is refused immediately instead of holding a connection open
-    # while MuseScore works; see acquire_transcribe_lock for the same reasoning.
-    sheets_lock = threading.Lock()
     # State of the run currently holding the lock (or the last one to have held
     # it), guarded by `cancel_guard`: its cancel event and the id of the client
     # that started it. A new /transcribe from the SAME client (a resubmit in
@@ -494,11 +488,10 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
         """
         midi_bytes = await midi.read()
 
-        if not sheets_lock.acquire(blocking=False):
-            raise HTTPException(
-                status_code=503,
-                detail="server busy: another score is being engraved",
-            )
+        # Deliberately unserialized, unlike /transcribe: engraving is a handful
+        # of short MuseScore processes (~96 MiB and a few seconds each), cheap
+        # enough that concurrent callers can just run, and it uses none of the
+        # GPU a transcription wants.
         try:
             zip_bytes = await asyncio.to_thread(engrave_to_zip, midi_bytes)
         except MuseScoreNotFoundError as e:
@@ -509,8 +502,6 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
             # MuseScore ran but wrote nothing usable — most often because the
             # upload wasn't a MIDI file it could import.
             raise HTTPException(status_code=500, detail=str(e)) from e
-        finally:
-            sheets_lock.release()
 
         return Response(
             content=zip_bytes,
