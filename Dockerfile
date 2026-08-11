@@ -41,15 +41,7 @@ RUN apt-get update \
         libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# MuseScore, for the /sheets endpoint (engraved PDFs + MusicXML). It is only
-# distributed for Linux as an AppImage, which normally needs FUSE to mount
-# itself at run time; --appimage-extract unpacks it at build time instead, so
-# the container needs no FUSE device and no extra privileges. The unpacked tree
-# is ~560 MB; with the libraries above the image grows by ~760 MB.
-#
-# Pinned by full URL because the release asset carries a build number that
-# cannot be derived from the version. Override to move to a newer MuseScore:
-#   docker build --build-arg MUSESCORE_URL=https://…-x86_64.AppImage
+
 ARG MUSESCORE_URL=https://github.com/musescore/MuseScore/releases/download/v4.7.4/MuseScore-Studio-4.7.4.260706075-x86_64.AppImage
 RUN curl -fsSL -o /tmp/musescore.AppImage "$MUSESCORE_URL" \
     && chmod +x /tmp/musescore.AppImage \
