@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "clsx": "^2.1.1",
+    "fflate": "^0.8.3",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "spessasynth_lib": "^4.3.8",

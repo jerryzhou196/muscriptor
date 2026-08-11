@@ -282,12 +282,81 @@ def test_write_sheets_reports_unparseable_parts_output(tmp_path, monkeypatch):
     "name,expected",
     [
         (
+            # MuseScore's instrument name adds nothing to the track name here.
             "Electric Guitar, distorted electric guitar",
-            "electric_guitar_distorted_electric_guitar",
+            "distorted_electric_guitar",
         ),
+        ("Electric Guitar, clean electric guitar", "clean_electric_guitar"),
+        # Same name twice over: keep one copy, not two.
+        ("Electric Bass, electric bass", "electric_bass"),
+        # Neither says the other, so neither is dropped.
+        ("Drum Kit, drums", "drum_kit_drums"),
+        ("Alto, voice", "alto_voice"),
         ("Drum Kit", "drum_kit"),
         ("!!!", "part"),
+        ("", "part"),
     ],
 )
 def test_slug(name, expected):
     assert sheets._slug(name) == expected
+
+
+def test_slug_keeps_the_more_specific_segment(tmp_path, monkeypatch):
+    """The dedup must not shorten a name into a different instrument."""
+    assert sheets._slug("Guitar, acoustic guitar") == "acoustic_guitar"
+    assert sheets._slug("Acoustic Guitar, guitar") == "acoustic_guitar"
+
+
+def test_part_pdfs_are_named_without_the_repetition(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        sheets, "_run", _FakeMuseScore(parts=["Electric Guitar, clean electric guitar"])
+    )
+    out = tmp_path / "sheets"
+    sheets.write_sheets(b"MThd-fake", out, musescore="/fake/mscore")
+    assert (out / "01_clean_electric_guitar.pdf").is_file()
+
+
+def _captured_env(monkeypatch, system):
+    """Run `_run` with subprocess mocked out, returning the env it passed."""
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured.update(kwargs["env"])
+        return subprocess.CompletedProcess(argv, 0, "MuseScore4 4.7.4", "")
+
+    monkeypatch.setattr(sheets.platform, "system", lambda: system)
+    monkeypatch.setattr(sheets.subprocess, "run", fake_run)
+    sheets._run("/fake/mscore", ["--version"])
+    return captured
+
+
+def test_run_forces_the_offscreen_platform_on_linux(monkeypatch):
+    """Both variables are required on a headless box.
+
+    MuseScore 4 sets Qt's platform from its own MU_QT_QPA_PLATFORM and ignores
+    QT_QPA_PLATFORM; Qt still needs QT_QPA_PLATFORM itself. With only one of
+    them set, MuseScore tries to open an X11 display and aborts with "no Qt
+    platform plugin could be initialized" — so a server or container with no
+    display renders nothing at all.
+    """
+    env = _captured_env(monkeypatch, "Linux")
+    assert env["QT_QPA_PLATFORM"] == "offscreen"
+    assert env["MU_QT_QPA_PLATFORM"] == "offscreen"
+
+
+def test_run_leaves_the_platform_alone_off_linux(monkeypatch):
+    """macOS/Windows have a working native platform plugin; forcing offscreen
+    there would only take away a display MuseScore can legitimately use."""
+    env = _captured_env(monkeypatch, "Darwin")
+    assert "QT_QPA_PLATFORM" not in env
+    assert "MU_QT_QPA_PLATFORM" not in env
+
+
+def test_run_does_not_override_an_explicit_platform(monkeypatch):
+    """Someone who set the variables themselves (an Xvfb display, say) keeps
+    them: both are setdefault, not assignment."""
+    monkeypatch.setenv("QT_QPA_PLATFORM", "xcb")
+    monkeypatch.setenv("MU_QT_QPA_PLATFORM", "xcb")
+    env = _captured_env(monkeypatch, "Linux")
+    assert env["QT_QPA_PLATFORM"] == "xcb"
+    assert env["MU_QT_QPA_PLATFORM"] == "xcb"

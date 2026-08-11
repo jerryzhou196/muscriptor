@@ -4,20 +4,24 @@ Uses a fake transcriber so no weights / audio decoding is required.
 """
 
 import base64
+import io
 import json
 import threading
 import time
 import wave
+import zipfile
 from pathlib import Path
 from unittest.mock import create_autospec
 
 import numpy as np
 from fastapi.testclient import TestClient
 
+import muscriptor.server as server_module
 from muscriptor.events import NoteEndEvent, NoteStartEvent, ProgressEvent
 from muscriptor.server import create_app, event_to_dict
 from muscriptor.transcription_model import TranscriptionModel
 from muscriptor.utils.beats import BeatGrid
+from muscriptor.utils.sheets import MuseScoreError, MuseScoreNotFoundError
 
 FAKE_MIDI = b"FAKE_MIDI_BYTES"
 
@@ -326,8 +330,6 @@ def test_transcribe_midi_rejects_unknown_instrument(tmp_path):
 def test_transcribe_midi_rejects_audio_over_duration_limit(tmp_path, monkeypatch):
     """Audio longer than the 15-minute cap is rejected with 413, before the
     model is ever touched."""
-    import muscriptor.server as server_module
-
     monkeypatch.setattr(server_module, "_MAX_TRANSCRIBE_MIDI_DURATION_S", 0.05)
     model = make_model()
     client = TestClient(create_app(model), raise_server_exceptions=False)
@@ -461,3 +463,162 @@ def test_concurrent_same_client_preempts(tmp_path):
     # B (the resubmit) ran to completion.
     assert out["B"][-1]["type"] == "transcription_complete"
     assert model.transcribe.call_count == 2
+
+
+# ---- /sheets ------------------------------------------------------------
+# MuseScore is never invoked here: `write_sheets` is replaced with a stub that
+# writes the same shape of output, so these run on machines without it.
+
+FAKE_PDF = b"%PDF-1.4 fake"
+
+
+def _fake_write_sheets(midi_bytes, out_dir, musescore=None):
+    """Stand-in for write_sheets: the real file set, with dummy contents."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written = []
+    for name, payload in (
+        ("score.mid", midi_bytes),
+        ("score.musicxml", b"<score-partwise/>"),
+        ("full_score.pdf", FAKE_PDF),
+        ("01_electric_guitar.pdf", FAKE_PDF),
+        ("01_electric_guitar_tab.pdf", FAKE_PDF),
+    ):
+        path = out_dir / name
+        path.write_bytes(payload)
+        written.append(path)
+    return written
+
+
+def _sheets_client(monkeypatch, write_sheets=_fake_write_sheets, **kwargs):
+    monkeypatch.setattr(server_module, "write_sheets", write_sheets)
+    return TestClient(create_app(make_model()), **kwargs)
+
+
+def test_sheets_returns_every_engraved_file(monkeypatch):
+    client = _sheets_client(monkeypatch)
+    resp = client.post("/sheets", files={"midi": ("in.mid", FAKE_MIDI, "audio/midi")})
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/zip"
+    assert resp.headers["content-disposition"] == 'attachment; filename="sheets.zip"'
+
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
+        # Flattened to bare filenames, in the order write_sheets emits them —
+        # the frontend lists them as they come out of the archive.
+        assert archive.namelist() == [
+            "score.mid",
+            "score.musicxml",
+            "full_score.pdf",
+            "01_electric_guitar.pdf",
+            "01_electric_guitar_tab.pdf",
+        ]
+        assert archive.read("score.mid") == FAKE_MIDI
+        assert archive.read("full_score.pdf") == FAKE_PDF
+
+
+def test_sheets_zip_is_stored_not_deflated(monkeypatch):
+    """The browser unpacks this archive itself; every member must be stored."""
+    client = _sheets_client(monkeypatch)
+    resp = client.post("/sheets", files={"midi": ("in.mid", FAKE_MIDI, "audio/midi")})
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
+        assert [i.compress_type for i in archive.infolist()] == [
+            zipfile.ZIP_STORED
+        ] * len(archive.infolist())
+
+
+def test_sheets_passes_the_uploaded_midi_through(monkeypatch):
+    seen = {}
+
+    def spy(midi_bytes, out_dir, musescore=None):
+        seen["midi"] = midi_bytes
+        return _fake_write_sheets(midi_bytes, out_dir)
+
+    client = _sheets_client(monkeypatch, write_sheets=spy)
+    resp = client.post("/sheets", files={"midi": ("in.mid", b"MThd...", "audio/midi")})
+    assert resp.status_code == 200
+    assert seen["midi"] == b"MThd..."
+
+
+def test_sheets_leaves_nothing_on_disk(monkeypatch):
+    """The scratch directory write_sheets rendered into is gone afterwards."""
+    dirs = []
+
+    def spy(midi_bytes, out_dir, musescore=None):
+        dirs.append(out_dir)
+        return _fake_write_sheets(midi_bytes, out_dir)
+
+    client = _sheets_client(monkeypatch, write_sheets=spy)
+    assert (
+        client.post(
+            "/sheets", files={"midi": ("in.mid", FAKE_MIDI, "audio/midi")}
+        ).status_code
+        == 200
+    )
+    assert not dirs[0].exists()
+
+
+def test_sheets_without_musescore_is_503(monkeypatch):
+    """A server with no MuseScore is a deployment problem, not a bad request —
+    and the install hint has to reach the client."""
+
+    def missing(midi_bytes, out_dir, musescore=None):
+        raise MuseScoreNotFoundError("MuseScore was not found. Downloads: ...")
+
+    client = _sheets_client(monkeypatch, write_sheets=missing)
+    resp = client.post("/sheets", files={"midi": ("in.mid", FAKE_MIDI, "audio/midi")})
+    assert resp.status_code == 503
+    assert "MuseScore was not found" in resp.json()["detail"]
+
+
+def test_sheets_reports_a_musescore_failure(monkeypatch):
+    def broken(midi_bytes, out_dir, musescore=None):
+        raise MuseScoreError("MuseScore failed to import the MIDI file.")
+
+    client = _sheets_client(
+        monkeypatch, write_sheets=broken, raise_server_exceptions=False
+    )
+    resp = client.post("/sheets", files={"midi": ("in.mid", b"not midi", "audio/midi")})
+    assert resp.status_code == 500
+    assert "import the MIDI file" in resp.json()["detail"]
+
+
+def test_sheets_missing_file(monkeypatch):
+    client = _sheets_client(monkeypatch)
+    assert client.post("/sheets").status_code == 422
+
+
+def test_sheets_refuses_a_second_concurrent_engrave(monkeypatch):
+    """One engrave at a time: a second caller is refused straight away rather
+    than holding a connection open for however long MuseScore takes."""
+    first_reached = threading.Event()
+    gate = threading.Event()
+
+    def blocking(midi_bytes, out_dir, musescore=None):
+        first_reached.set()
+        assert gate.wait(timeout=10), "gate never opened"
+        return _fake_write_sheets(midi_bytes, out_dir)
+
+    monkeypatch.setattr(server_module, "write_sheets", blocking)
+    app = create_app(make_model())
+    files = {"midi": ("in.mid", FAKE_MIDI, "audio/midi")}
+    out = {}
+
+    def post_first():
+        out["first"] = TestClient(app).post("/sheets", files=files).status_code
+
+    a = threading.Thread(target=post_first)
+    a.start()
+    assert first_reached.wait(timeout=5)
+
+    started = time.monotonic()
+    resp = TestClient(app).post("/sheets", files=files)
+    assert resp.status_code == 503
+    assert time.monotonic() - started < 2.0  # refused, not queued
+
+    gate.set()
+    a.join(timeout=10)
+    assert out["first"] == 200
+
+    # ...and the lock is free again once that engrave finished.
+    monkeypatch.setattr(server_module, "write_sheets", _fake_write_sheets)
+    assert TestClient(app).post("/sheets", files=files).status_code == 200

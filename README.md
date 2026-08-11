@@ -340,6 +340,45 @@ muscriptor detects. Its MIDI importer runs its own beat tracking for
 unquantized input and ignores the file's `set_tempo` when it does, and there is
 no import option to hand it a beat grid.
 
+### From the server
+
+`POST /sheets` engraves the same set from a MIDI upload and returns it as one
+uncompressed (`ZIP_STORED`) zip:
+
+```bash
+curl -X POST http://127.0.0.1:8222/sheets -F midi=@out.mid -o sheets.zip
+```
+
+Rendering is slow enough that it is done in bulk rather than one file per
+request, and only one runs at a time — a second caller gets a 503 rather than
+a held-open connection. A server without MuseScore also answers 503, with the
+install hint as the error detail.
+
+The web UI's Download menu offers this as **Music sheets**: it unpacks the zip
+in the browser (with [fflate](https://github.com/101arrowz/fflate)) and lists
+the files, so a click saves one of them straight from memory — no second round
+trip and no archive to open by hand. It needs MuseScore on the machine running
+`muscriptor serve`; the Docker image installs it (see below).
+
+### In Docker
+
+The image ships MuseScore, so `/sheets` works out of the box. It is unpacked
+from the AppImage at build time (`--appimage-extract`) rather than mounted at
+run time, so no FUSE device or extra privileges are needed — at the cost of
+about 760 MB. The version is pinned by URL and overridable:
+
+```bash
+docker build --build-arg MUSESCORE_URL=https://…-x86_64.AppImage .
+```
+
+On a machine with no display — a container, a headless server — MuseScore has
+to be told to use Qt's offscreen platform, and it takes **both**
+`QT_QPA_PLATFORM=offscreen` and MuseScore's own `MU_QT_QPA_PLATFORM=offscreen`
+to do it (MuseScore 4 sets Qt's from its own and ignores the plain one; with
+either missing it aborts with "no Qt platform plugin could be initialized").
+`sheets._run` sets both on Linux, so nothing extra is needed to run the CLI or
+the server headless.
+
 ## Web UI
 
 A browser client is included under `web/`. The FastAPI server serves both

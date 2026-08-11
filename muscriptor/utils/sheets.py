@@ -182,9 +182,16 @@ def _run(binary: str, args: list[str]) -> subprocess.CompletedProcess:
     """
     env = dict(os.environ)
     if platform.system() == "Linux":
-        # Without this MuseScore tries to open an X11 display and dies on a
-        # headless box; harmless when a display is present.
+        # Without these MuseScore tries to open an X11 display and dies on a
+        # headless box ("no Qt platform plugin could be initialized"); harmless
+        # when a display is present. MuseScore 4 sets Qt's platform from its own
+        # MU_QT_QPA_PLATFORM and ignores QT_QPA_PLATFORM, so the second line is
+        # the one that matters on the server; the first still covers MuseScore 3
+        # and anything else Qt-based in the chain. Passing `-platform offscreen`
+        # instead does not work: MuseScore's command-line parser reads the value
+        # as an input file and the conversion silently loses its real argument.
         env.setdefault("QT_QPA_PLATFORM", "offscreen")
+        env.setdefault("MU_QT_QPA_PLATFORM", "offscreen")
     try:
         return subprocess.run(
             [binary, *args],
@@ -206,8 +213,34 @@ def _fail(what: str, proc: subprocess.CompletedProcess) -> None:
     raise MuseScoreError(f"MuseScore failed to {what}.{detail}")
 
 
+def _normalize(text: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "_", text).strip("_").lower()
+
+
 def _slug(name: str) -> str:
-    return re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_").lower() or "part"
+    """Filename stem for a part, with the repetition in its name dropped.
+
+    MuseScore names a part after the instrument it matched, then appends the
+    track name the MIDI carried — which for a transcription usually says the
+    same thing twice: "Electric Guitar, clean electric guitar". A segment whose
+    words all appear in another one adds nothing, so it goes and the more
+    specific name stays. Segments that genuinely differ are both kept, since
+    there is no telling which one the reader wants ("Drum Kit, drums").
+    """
+    segments = [s for s in (_normalize(part) for part in name.split(",")) if s]
+    words = [set(segment.split("_")) for segment in segments]
+    keep = [
+        segment
+        for i, segment in enumerate(segments)
+        # A strict subset says strictly less; identical segments would each
+        # rule the other out, so only the first of those survives.
+        if not any(
+            words[i] < other or (words[i] == other and j < i)
+            for j, other in enumerate(words)
+            if j != i
+        )
+    ]
+    return "_".join(keep) or "part"
 
 
 def _string_counts(mscx_path: Path) -> list[int]:
