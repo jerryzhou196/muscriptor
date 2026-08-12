@@ -13,6 +13,7 @@ export default defineConfig({
         "/transcribe",
         "/instruments",
         "/auralize",
+        "/sheets",
         "/health",
         "/soundfonts",
       ].map((path) => [

@@ -69,6 +69,8 @@
 
   --animate-rise: rise 0.7s var(--ease-fluid) both;
   --animate-drag-glow: drag-glow 1.7s var(--ease-fluid) infinite;
+  /* 25s so a slow engraving still has the bar moving when it lands. */
+  --animate-creep: creep 25s var(--ease-fluid) forwards;
 
   @keyframes drag-glow {
     0%,
@@ -81,6 +83,17 @@
       box-shadow:
         0 0 0 1px var(--color-accent),
         0 0 40px 2px var(--color-accent-glow);
+    }
+  }
+  /* Server-side renders (engraving, synthesis) report no progress, so this
+     creeps toward the end on an ease-out and never arrives: it says "still
+     working" without ever claiming to be nearly done. */
+  @keyframes creep {
+    from {
+      width: 0%;
+    }
+    to {
+      width: 92%;
     }
   }
   @keyframes rise {

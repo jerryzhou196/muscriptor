@@ -15,6 +15,11 @@ POST /transcribe/midi takes the same upload but blocks until transcription
 completes and returns the raw `audio/midi` bytes directly (no SSE, no
 base64), with a `Content-Disposition: attachment` header. Audio longer than
 15 minutes is rejected with 413.
+
+POST /sheets takes a MIDI upload instead of audio and returns every file
+`muscriptor.utils.sheets.write_sheets` engraves from it — MusicXML, the full
+score, one PDF per instrument — as a single uncompressed zip. It needs
+MuseScore 4+ on the server, and answers 503 when there is none.
 """
 
 import asyncio
@@ -27,6 +32,7 @@ import tempfile
 import threading
 import time
 import wave
+import zipfile
 from pathlib import Path
 from typing import Annotated, Callable
 
@@ -42,6 +48,11 @@ from muscriptor.transcription_model import TranscriptionModel
 from muscriptor.utils.audio import _read_non_wav_file, _read_wav_file
 from muscriptor.utils.beats import BeatDetectionError, TempoDetection
 from muscriptor.utils.download import download_if_necessary
+from muscriptor.utils.sheets import (
+    MuseScoreError,
+    MuseScoreNotFoundError,
+    write_sheets,
+)
 
 
 def _make_release_once(lock: threading.Lock):
@@ -66,6 +77,29 @@ def _make_release_once(lock: threading.Lock):
 
 
 _MAX_TRANSCRIBE_MIDI_DURATION_S = 15 * 60
+
+SHEETS_ZIP_NAME = "sheets.zip"
+
+
+def engrave_to_zip(midi_bytes: bytes) -> bytes:
+    """Engrave `midi_bytes` and pack everything written into one zip.
+
+    Runs `write_sheets` into a scratch directory that is thrown away once the
+    archive is built, so the server keeps nothing on disk between requests.
+    Member names are the bare filenames — the directory layout documented under
+    "Sheet music" in the README, flattened by one level.
+
+    Stored, not deflated: the client unpacks this archive in the browser to
+    offer the files one at a time, and all but the MusicXML are PDFs, which
+    carry compression of their own.
+    """
+    with tempfile.TemporaryDirectory(prefix="muscriptor-sheets-") as tmp:
+        written = write_sheets(midi_bytes, Path(tmp))
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as archive:
+            for path in written:
+                archive.write(path, arcname=path.name)
+        return buf.getvalue()
 
 
 def event_to_dict(ev: NoteStartEvent | NoteEndEvent) -> dict:
@@ -442,6 +476,36 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
                     os.unlink(p)
 
         return Response(content=wav_bytes, media_type="audio/wav")
+
+    @app.post("/sheets")
+    async def sheets(midi: Annotated[UploadFile, File()]) -> Response:
+        """Engrave a MIDI file as sheet music, returned as one zip.
+
+        The whole set is rendered in one go — MuseScore is slow enough that a
+        round trip per file would be worse — so the caller gets every PDF, the
+        MusicXML and the MIDI in a single uncompressed archive and picks from it
+        locally. Requires MuseScore 4+ on the server (503 without it).
+        """
+        midi_bytes = await midi.read()
+
+        try:
+            zip_bytes = await asyncio.to_thread(engrave_to_zip, midi_bytes)
+        except MuseScoreNotFoundError as e:
+            # A deployment problem, not a bad request: the same 503 the UI
+            # already knows how to report, with the install hint as its detail.
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except MuseScoreError as e:
+            # MuseScore ran but wrote nothing usable — most often because the
+            # upload wasn't a MIDI file it could import.
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+        return Response(
+            content=zip_bytes,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{SHEETS_ZIP_NAME}"'
+            },
+        )
 
     if web_dir is not None:
         web_path = Path(web_dir)

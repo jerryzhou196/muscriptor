@@ -1,8 +1,21 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import clsx from "clsx";
+import { unzipSync } from "fflate";
 import { Button } from "./Button";
+import { SheetsDialog, type SheetFile } from "./SheetsDialog";
 import { IconChevron, IconDownload } from "./icons";
 import { track } from "../analytics";
+
+/** The FastAPI `detail` of a failed response, or its raw body if it isn't one. */
+async function errorDetail(resp: Response): Promise<string> {
+  const text = await resp.text();
+  try {
+    return JSON.parse(text).detail ?? text;
+  } catch {
+    // not JSON — keep the raw body
+    return text;
+  }
+}
 
 /**
  * Output / "job" actions, shown below the piano roll: live transcription
@@ -35,8 +48,20 @@ export function OutputBar(props: {
     currentFile,
     onTranscribeAnother,
   } = props;
-  const [synthesizing, setSynthesizing] = useState(false);
+  // Label shown on the Download button while a server-side render runs, or null
+  // when idle — the exports below all block the menu while they work.
+  const [busy, setBusy] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  // The unpacked sheet-music archive, once /sheets has answered. Kept after the
+  // dialog is dismissed so reopening the picker doesn't engrave the same score
+  // again — the transcription it was rendered from cannot change without this
+  // whole bar unmounting.
+  const [sheets, setSheets] = useState<{
+    files: SheetFile[];
+    zipBlob: Blob;
+    zipFilename: string;
+  } | null>(null);
+  const [sheetsOpen, setSheetsOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const ready = midiUrl !== null;
 
@@ -66,41 +91,79 @@ export function OutputBar(props: {
     a.click();
   }
 
+  /** The uploaded file's name without its extension, for naming exports. */
+  function stem(): string {
+    return currentFile?.name.replace(/\.[^.]+$/, "") || "transcription";
+  }
+
   // Renders the transcription server-side with FluidSynth. "synth" downloads
   // just the synthesized MIDI (mono); "mix" blends it with the original audio
   // (L = original, R = synthesis) for easy A/B comparison.
   async function downloadWav(mode: "synth" | "mix") {
     if (midiBlob === null || currentFile === null) return;
     track("download", { format: mode === "mix" ? "wav_mix" : "wav_synth" });
-    setSynthesizing(true);
+    setBusy("Synthesizing…");
     try {
       const form = new FormData();
       form.append("mode", mode);
       form.append("midi", midiBlob, "transcription.mid");
       if (mode === "mix") form.append("audio", currentFile);
       const resp = await fetch("/auralize", { method: "POST", body: form });
-      if (!resp.ok) {
-        const text = await resp.text();
-        let detail = text;
-        try {
-          detail = JSON.parse(text).detail ?? text;
-        } catch {
-          // not JSON — keep the raw body
-        }
-        throw new Error(detail);
-      }
+      if (!resp.ok) throw new Error(await errorDetail(resp));
       const wavBlob = await resp.blob();
       const url = URL.createObjectURL(wavBlob);
       const a = document.createElement("a");
       a.href = url;
-      const stem = currentFile.name.replace(/\.[^.]+$/, "") || "transcription";
-      a.download = stem + (mode === "mix" ? "_mix.wav" : "_transcription.wav");
+      a.download = stem() + (mode === "mix" ? "_mix.wav" : "_transcription.wav");
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
       alert("Couldn't create the audio file: " + (e as Error).message);
     } finally {
-      setSynthesizing(false);
+      setBusy(null);
+    }
+  }
+
+  // Engraves the transcription as notation (MuseScore, server-side). That takes
+  // long enough that it is done in bulk: one request renders the whole set —
+  // MusicXML, the full score, a PDF per instrument, tablature for the fretted
+  // ones — and answers with an uncompressed zip. Unpacking it here means the
+  // user picks files out of something the browser already has, with no further
+  // round trip and no archive to open by hand.
+  async function downloadSheets() {
+    if (midiBlob === null) return;
+    track("download", { format: "sheets" });
+    // Already engraved this run — just show the picker again.
+    if (sheets !== null) {
+      setSheetsOpen(true);
+      return;
+    }
+    setBusy("Generating…");
+    try {
+      const form = new FormData();
+      form.append("midi", midiBlob, "transcription.mid");
+      const resp = await fetch("/sheets", { method: "POST", body: form });
+      if (!resp.ok) throw new Error(await errorDetail(resp));
+      const zipBlob = await resp.blob();
+      // The members are stored, not deflated, so this unpacking is a copy out
+      // of the buffer rather than an inflate of every PDF.
+      const unpacked = unzipSync(new Uint8Array(await zipBlob.arrayBuffer()));
+      // Object keys keep insertion order for names like these, so the list
+      // comes out in the order the server wrote it: MIDI, MusicXML, full score,
+      // then the parts.
+      const files = Object.entries(unpacked).map(([name, bytes]) => ({
+        name,
+        // Unpacked out of an ArrayBuffer, so never the SharedArrayBuffer that
+        // fflate's looser return type leaves open (and that Blob rejects).
+        bytes: bytes as Uint8Array<ArrayBuffer>,
+      }));
+      if (files.length === 0) throw new Error("the server returned an empty archive");
+      setSheets({ files, zipBlob, zipFilename: stem() + "_sheets.zip" });
+      setSheetsOpen(true);
+    } catch (e) {
+      alert("Couldn't engrave the sheet music: " + (e as Error).message);
+    } finally {
+      setBusy(null);
     }
   }
 
@@ -131,17 +194,28 @@ export function OutputBar(props: {
         <div className="relative" ref={menuRef}>
           <Button
             kind={ready ? "primary" : "secondary"}
-            className="inline-flex items-center gap-2"
-            disabled={!ready || synthesizing}
+            className="relative inline-flex items-center gap-2 overflow-hidden"
+            disabled={!ready || busy !== null}
             onClick={() => setMenuOpen((o) => !o)}
             aria-haspopup="menu"
             aria-expanded={menuOpen}
           >
             <IconDownload />
-            {synthesizing ? "Synthesizing…" : "Download"}
+            {busy ?? "Download"}
             <IconChevron
               className={clsx("transition-transform", menuOpen && "rotate-180")}
             />
+            {/* The server renders these in one shot and reports nothing along
+                the way, so this bar is honestly fake: it exists to show the
+                click registered and something is still running. Keyed on the
+                label so a second export restarts it from zero. */}
+            {busy !== null && (
+              <span
+                key={busy}
+                aria-hidden
+                className="absolute inset-x-0 bottom-0 h-0.5 animate-creep rounded-full bg-white/70"
+              />
+            )}
           </Button>
           {menuOpen && (
             <div
@@ -186,6 +260,19 @@ export function OutputBar(props: {
               >
                 WAV - stereo with original
               </Button>
+              <Button
+                kind="ghost"
+                pad="px-3 py-2"
+                role="menuitem"
+                className={menuItem}
+                title="Engraved notation: PDFs per instrument, tablature, MusicXML"
+                onClick={() => {
+                  setMenuOpen(false);
+                  downloadSheets();
+                }}
+              >
+                Sheet music
+              </Button>
             </div>
           )}
         </div>
@@ -199,6 +286,15 @@ export function OutputBar(props: {
           Transcribe another
         </Button>
       </div>
+
+      {sheets && sheetsOpen && (
+        <SheetsDialog
+          files={sheets.files}
+          zipBlob={sheets.zipBlob}
+          zipFilename={sheets.zipFilename}
+          onClose={() => setSheetsOpen(false)}
+        />
+      )}
     </div>
   );
 }

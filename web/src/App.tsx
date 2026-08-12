@@ -373,7 +373,7 @@ export function App() {
           <h1 className="m-0 flex flex-col gap-1 font-normal">
             <span className="text-[clamp(2.3rem,6vw,3rem)] font-bold leading-none text-white">MuScriptor</span>
             <span className="text-sm text-muted">
-              Audio to MIDI converter
+              Audio to MIDI and sheet music transcription
             </span>
           </h1>
         </div>
