@@ -42,7 +42,10 @@ export type SubmitState =
 
 // The song is Headache by Lost Deposit. ig: @lostdeposit
 const EXAMPLE = {
-  url: "/headache_by_lost_deposit_1min.mp3",
+  // Dev gets a 10s clip so local test transcriptions are quick.
+  url: import.meta.env.DEV
+    ? "/headache_by_lost_deposit_10s.mp3"
+    : "/headache_by_lost_deposit_1min.mp3",
   filename: "Lost Deposit - Headache (example track)",
   conditioning: [
     "drums",
