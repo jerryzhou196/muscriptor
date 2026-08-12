@@ -271,7 +271,7 @@ export function OutputBar(props: {
                   downloadSheets();
                 }}
               >
-                Music sheets
+                Sheet music
               </Button>
             </div>
           )}

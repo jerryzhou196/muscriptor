@@ -70,14 +70,11 @@ export function SheetsDialog(props: {
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="Sheet music"
+        aria-label="Download sheet music"
         className="flex max-h-full w-full max-w-lg flex-col overflow-hidden rounded-card border border-line-strong bg-surface shadow-overlay"
       >
         <div className="border-b border-line px-5 py-4">
-          <h2 className="m-0 text-base font-semibold text-content">Sheet music</h2>
-          <p className="m-0 mt-1 text-[13px] text-muted">
-            Everything is engraved and already in your browser — pick what to save.
-          </p>
+          <h2 className="m-0 text-base font-semibold text-content">Download sheet music</h2>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
