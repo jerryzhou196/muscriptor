@@ -12,7 +12,7 @@ const SEGMENTS: { text: string; href?: string }[] = [
   { text: " or " },
   {
     text: "open an issue",
-    href: "https://github.com/muscriptor/muscriptor/issues/new",
+    href: "https://github.com/muscriptor/muscriptor/issues/new/choose",
   },
 ];
 

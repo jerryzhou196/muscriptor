@@ -53,7 +53,7 @@ const QA: { q: string; a: string }[] = [
   },
   {
     q: "How do I report a bug or send feedback?",
-    a: "Please [email us](mailto:muscriptor@kyutai.org) or [open an issue on GitHub](https://github.com/muscriptor/muscriptor/issues/new).",
+    a: "Please [email us](mailto:muscriptor@kyutai.org) or [open an issue on GitHub](https://github.com/muscriptor/muscriptor/issues/new/choose).",
   },
 ];
 

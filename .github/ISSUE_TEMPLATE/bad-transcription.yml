@@ -1,0 +1,53 @@
+name: Bad transcription
+description: The model transcribed a song wrong (missing notes, wrong instrument, wrong rhythm...)
+labels: ["transcription quality"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **We can't do anything without the audio.** Every transcription report needs the
+        exact file you were transcribing, otherwise we cannot fix the issue.
+
+        Note that the model is not perfect: some wrong notes are an expected failure case
+        and the answer will be "edit the MIDI afterwards". We're looking for systematic
+        problems - long dropouts, everything landing on one track, a part that never appears.
+  - type: textarea
+    id: audio
+    attributes:
+      label: The audio file
+      description: |
+        Drag-and-drop the file here, or paste a Google Drive/Dropbox link. If you can't
+        share it publicly, email it to muscriptor@kyutai.org and write "sent by email" here.
+      placeholder: (drag the file into this box)
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What's wrong, and where?
+      description: |
+        One or two sentences, plus timestamps, e.g. "The guitar disappears from 3:05 to 3:45".
+        A screenshot of the piano roll helps.
+      placeholder: |
+        The hi-hat is transcribed as 8 hits per bar instead of 4, from the start.
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: How did you run it?
+      description: The exact command, or "web app at muscriptor.com".
+      placeholder: muscriptor transcribe song.wav --model large
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `muscriptor --version`. Skip if you used the web app.
+      placeholder: "0.3.0"
+  - type: markdown
+    attributes:
+      value: |
+        Please write your report yourself, even imperfectly. Short human-written text is
+        much easier for us to act on than a long AI-generated one.
