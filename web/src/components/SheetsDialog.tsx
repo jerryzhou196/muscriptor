@@ -150,11 +150,11 @@ function mimeOf(name: string): string {
 function describe(name: string): string {
   if (name === "score.mid") return "MIDI file";
   if (name === "score.musicxml") return "MusicXML score";
-  if (name === "full_score.pdf") return "Full score — every instrument";
+  if (name === "full_score.pdf") return "Full score - every instrument";
   const part = name.match(/^\d+_(.+?)(_tab)?\.pdf$/);
   if (!part) return name;
   const instrument = part[1].replace(/_/g, " ");
-  return instrument.charAt(0).toUpperCase() + instrument.slice(1) + (part[2] ? " — tablature" : "");
+  return instrument.charAt(0).toUpperCase() + instrument.slice(1) + (part[2] ? " - tablature" : "");
 }
 
 function formatSize(bytes: number): string {
