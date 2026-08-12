@@ -194,7 +194,7 @@ export function OutputBar(props: {
         <div className="relative" ref={menuRef}>
           <Button
             kind={ready ? "primary" : "secondary"}
-            className="relative inline-flex items-center gap-2 overflow-hidden"
+            className="inline-flex items-center gap-2"
             disabled={!ready || busy !== null}
             onClick={() => setMenuOpen((o) => !o)}
             aria-haspopup="menu"
@@ -206,14 +206,16 @@ export function OutputBar(props: {
               className={clsx("transition-transform", menuOpen && "rotate-180")}
             />
             {/* The server renders these in one shot and reports nothing along
-                the way, so this bar is honestly fake: it exists to show the
-                click registered and something is still running. Keyed on the
-                label so a second export restarts it from zero. */}
+                the way, so this is honestly fake: a tint creeping across the
+                button, skewed to match its fill, just to show the click
+                registered and something is still running. z-[-9] puts it over
+                the fill (-z-10) but under the label. Keyed on the label so a
+                second export restarts it from zero. */}
             {busy !== null && (
               <span
                 key={busy}
                 aria-hidden
-                className="absolute inset-x-0 bottom-0 h-0.5 animate-creep rounded-full bg-white/70"
+                className="absolute inset-y-0 left-0 z-[-9] w-0 -skew-x-10 animate-creep bg-white/12"
               />
             )}
           </Button>
