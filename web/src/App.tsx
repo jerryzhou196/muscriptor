@@ -376,7 +376,7 @@ export function App() {
           <div className="flex flex-col gap-1">
             <span className="text-[clamp(2.3rem,6vw,3rem)] font-bold leading-none text-white">MuScriptor</span>
             <span className="text-sm text-muted">
-              Audio to MIDI and sheet music transcription
+              Music to MIDI and sheet music
             </span>
           </div>
         </div>

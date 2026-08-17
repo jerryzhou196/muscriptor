@@ -85,7 +85,11 @@ export function SheetsDialog(props: {
               pad="px-3 py-2.5"
               className="flex w-full items-center gap-3 rounded-md text-left font-normal hover:bg-[#20212b]"
               onClick={() => {
-                track("download", { format: "sheets_file", file_type: extensionOf(file.name) });
+                track("download", {
+                  format: "sheets_file",
+                  file_type: extensionOf(file.name),
+                  sheet_kind: kindOf(file.name),
+                });
                 save(urls[i], file.name);
               }}
             >
@@ -128,6 +132,14 @@ export function SheetsDialog(props: {
 
 function extensionOf(name: string): string {
   return name.split(".").pop()?.toLowerCase() ?? "";
+}
+
+/** Low-cardinality label for analytics: which kind of sheet was saved. */
+function kindOf(name: string): string {
+  if (name === "full_score.pdf") return "full_score";
+  const part = name.match(/^\d+_.+?(_tab)?\.pdf$/);
+  if (part) return part[1] ? "part_tab" : "part";
+  return extensionOf(name);
 }
 
 // Content types for what the server engraves, so a saved file opens in the

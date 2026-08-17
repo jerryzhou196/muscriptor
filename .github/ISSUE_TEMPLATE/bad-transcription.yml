@@ -8,9 +8,10 @@ body:
         **We can't do anything without the audio.** Every transcription report needs the
         exact file you were transcribing, otherwise we cannot fix the issue.
 
-        Note that the model is not perfect: some wrong notes are an expected failure case
-        and the answer will be "edit the MIDI afterwards". We're looking for systematic
-        problems - long dropouts, everything landing on one track, a part that never appears.
+        Note that the model is not perfect: some wrong notes are an expected
+        failure case and the answer will be "fix it up afterwards in a DAW or
+        notation editor". We're looking for systematic problems - long dropouts,
+        everything landing on one track, a part that never appears.
   - type: textarea
     id: audio
     attributes:

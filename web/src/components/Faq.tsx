@@ -17,7 +17,7 @@ import { track } from "../analytics";
 const QA: { q: string; a: string }[] = [
   {
     q: "What is MuScriptor?",
-    a: "MuScriptor is an audio to MIDI converter: you give it a recording and it transcribes the notes played by every instrument into MIDI. It was developed by [Kyutai](https://kyutai.org/) and [Mirelo](https://mirelo.ai/).",
+    a: "MuScriptor turns music into MIDI and sheet music: you give it a recording and it transcribes the notes played by every instrument. It was developed by [Kyutai](https://kyutai.org/) and [Mirelo](https://mirelo.ai/).",
   },
   {
     q: "Is it free to use?",
@@ -33,7 +33,11 @@ const QA: { q: string; a: string }[] = [
   },
   {
     q: "Can I convert a song to sheet music with it?",
-    a: "Indirectly: MuScriptor outputs MIDI, which you can open in MuseScore, Logic, Ableton, Guitar Pro or any notation editor and export as a score. MuScriptor transcribes pitch, onset and offset timing per instrument.",
+    a: "Yes. After transcribing, the download menu gives you the sheet music as PDFs, either per-instrument or the full score. You also get the MusicXML if you want to edit it in software like MuseScore, Sibelius or Guitar Pro.",
+  },
+  {
+    q: "Can it give me guitar tabs?",
+    a: "Yes. Fretted instruments like guitar and bass also yield a tablature PDF, next to the standard notation. Download it from the sheet music menu after transcribing. It does not write chord symbols, only the notes that are actually played.",
   },
   {
     q: "Can I run it locally or use it from Python?",
