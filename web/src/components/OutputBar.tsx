@@ -118,6 +118,10 @@ export function OutputBar(props: {
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
+      track("download_error", {
+        format: mode === "mix" ? "wav_mix" : "wav_synth",
+        message: (e as Error).message,
+      });
       alert("Couldn't create the audio file: " + (e as Error).message);
     } finally {
       setBusy(null);
@@ -161,6 +165,7 @@ export function OutputBar(props: {
       setSheets({ files, zipBlob, zipFilename: stem() + "_sheets.zip" });
       setSheetsOpen(true);
     } catch (e) {
+      track("download_error", { format: "sheets", message: (e as Error).message });
       alert("Couldn't engrave the sheet music: " + (e as Error).message);
     } finally {
       setBusy(null);
