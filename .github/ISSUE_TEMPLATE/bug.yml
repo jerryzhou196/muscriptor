@@ -1,0 +1,36 @@
+name: Bug report
+description: A crash, an error message, wrong output from the code (not from the model)
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For "the model transcribed my song wrong", use the *Bad transcription* template instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you expected, what you got. Paste the full traceback or error output.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: "The exact command(s). If it only happens with a specific file, attach it:
+        Drag-and-drop the file here, or paste a Google Drive/Dropbox link. If you can't
+        share it publicly, email it to muscriptor@kyutai.org and write \"sent by email\" here."
+      placeholder: |
+        1. muscriptor transcribe song.wav --format sheets
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: OS, Python version, `muscriptor --version`, device (CPU/CUDA/MPS).
+      placeholder: |
+        macOS 15.1, Python 3.11, muscriptor 0.3.0, MPS
+    validations:
+      required: true

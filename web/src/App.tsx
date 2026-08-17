@@ -42,7 +42,10 @@ export type SubmitState =
 
 // The song is Headache by Lost Deposit. ig: @lostdeposit
 const EXAMPLE = {
-  url: "/headache_by_lost_deposit_1min.mp3",
+  // Dev gets a 10s clip so local test transcriptions are quick.
+  url: import.meta.env.DEV
+    ? "/headache_by_lost_deposit_10s.mp3"
+    : "/headache_by_lost_deposit_1min.mp3",
   filename: "Lost Deposit - Headache (example track)",
   conditioning: [
     "drums",
@@ -373,7 +376,7 @@ export function App() {
           <h1 className="m-0 flex flex-col gap-1 font-normal">
             <span className="text-[clamp(2.3rem,6vw,3rem)] font-bold leading-none text-white">MuScriptor</span>
             <span className="text-sm text-muted">
-              Audio to MIDI and sheet music transcription
+              Music to MIDI and sheet music
             </span>
           </h1>
         </div>

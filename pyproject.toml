@@ -5,13 +5,23 @@ build-backend = "hatchling.build"
 [project]
 name = "muscriptor"
 version = "0.3.0"
-description = "Audio-to-MIDI transcription using a transformer language model"
+description = "Music transcription to MIDI and sheet music using a transformer language model"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Kyutai x Mirelo" }]
-keywords = ["audio", "midi", "transcription", "music", "transformer"]
+keywords = [
+    "audio",
+    "midi",
+    "transcription",
+    "music",
+    "transformer",
+    "sheet-music",
+    "notation",
+    "musicxml",
+    "tablature",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -27,9 +37,11 @@ dependencies = [
     # which only has wheels up to Python 3.12: on Intel macs pin torch (and
     # NumPy 1.x, which torch 2.2.2 was compiled against) and run under
     # Python <= 3.12, e.g. `uvx --python 3.12 muscriptor` (see README).
-    "torch>=2.0 ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    # The non-Intel floors must exclude the Intel-capped versions, otherwise uv
+    # unifies both branches on the old pin instead of forking the resolution.
+    "torch>=2.3 ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "torch>=2.0,<2.3 ; sys_platform == 'darwin' and platform_machine == 'x86_64'",
-    "numpy>=1.24 ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "numpy>=2 ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "numpy>=1.24,<2 ; sys_platform == 'darwin' and platform_machine == 'x86_64'",
     "einops>=0.4",
     "mido>=1.3",

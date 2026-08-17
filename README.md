@@ -4,7 +4,8 @@
 
 # MuScriptor
 
-MuScriptor is a multi-instrument music transcription (audio-to-MIDI) model developed by [Kyutai](https://kyutai.org) and [Mirelo](https://www.mirelo.ai).
+MuScriptor is a multi-instrument music transcription model developed by [Kyutai](https://kyutai.org) and [Mirelo](https://www.mirelo.ai).
+It turns a recording into MIDI and into sheet music.
 It's the most accurate open-source transcription model.
 You can use the model [here](https://muscriptor.kyutai.org) or self-host it using this repository.
 
@@ -67,6 +68,9 @@ uvx muscriptor serve
 ```
 
 This gives you the same UI as hosted on https://muscriptor.kyutai.org/, just with a different look.
+
+The sheet music download needs **MuseScore 4 or newer** installed separately (see
+[Sheet music](#sheet-music) below). Without it, everything except that download still works.
 
 ## Command-line interface (CLI)
 
