@@ -25,6 +25,14 @@ services:
       - "--metrics.prometheus=true"
       # Healthcheck
       - "--ping=true"
+
+      # Access logs. The Prometheus counters tell us how many 5xx we serve, but
+      # not which request or which replica produced them. The JSON log adds
+      # ServiceAddr, OriginStatus, RetryAttempts, RequestContentSize and
+      # Duration per request, which is what it takes to attribute a 502 to a
+      # specific backend and to correlate failures with upload size.
+      - "--accesslog=true"
+      - "--accesslog.format=json"
     healthcheck:
       test: ["CMD", "traefik", "healthcheck", "--ping"]
     ports:
