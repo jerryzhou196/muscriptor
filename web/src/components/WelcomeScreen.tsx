@@ -117,8 +117,8 @@ export function WelcomeScreen(props: {
       <p className="text-base leading-relaxed text-muted">
         MuScriptor is the best open model for multi-instrument transcription to
         date. Give it a recording: pop, classical, metal, jazz, whatever, and
-        it transcribes the notes played by every instrument into
-        MIDI, for you to download or explore interactively.
+        it transcribes the notes played by every instrument into MIDI and sheet
+        music, for you to download or explore interactively.
       </p>
       {/* Explicit extensions alongside the wildcard, needed for iOS Safari
        * which sometimes grays out perfectly valid audio files otherwise. */}

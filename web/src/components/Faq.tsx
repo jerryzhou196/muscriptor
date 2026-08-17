@@ -56,6 +56,10 @@ const QA: { q: string; a: string }[] = [
     a: "MuScriptor is a decoder-only transformer that reads the audio in 5-second chunks and generates a token stream describing note onsets, offsets and instruments, which is then assembled into MIDI. A major reason why it works so well is the dataset: MuScriptor is trained on 170k songs spanning classical music to heavy metal. [Read more in the paper](https://arxiv.org/abs/2607.08168).",
   },
   {
+    q: "Where can I find the code?",
+    a: "On GitHub: [github.com/muscriptor/muscriptor](https://github.com/muscriptor/muscriptor). The code is MIT-licensed.",
+  },
+  {
     q: "How do I report a bug or send feedback?",
     a: "Please [email us](mailto:muscriptor@kyutai.org) or [open an issue on GitHub](https://github.com/muscriptor/muscriptor/issues/new/choose).",
   },
