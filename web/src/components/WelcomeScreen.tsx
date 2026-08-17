@@ -119,10 +119,12 @@ export function WelcomeScreen(props: {
 
   return (
     <main className="mx-auto flex max-w-3xl flex-col gap-4 px-7 pb-12 pt-2 animate-rise [animation-delay:0.06s]">
+      {/* Same wording as the meta description and the noscript block in
+          index.html: one sentence to keep in sync, not three. */}
       <p className="text-lg leading-relaxed text-muted">
-        MuScriptor is a free, open-source tool that converts audio to MIDI you
-        can download. Give it an mp3/wav/... and it transcribes the notes played
-        by every instrument into MIDI you can edit in any DAW.
+        Free, open-source music transcription. Upload an mp3/wav/... and
+        MuScriptor turns every instrument into MIDI, sheet music PDFs and
+        guitar tabs you can download.
       </p>
       {/* Explicit extensions alongside the wildcard, needed for iOS Safari
        * which sometimes grays out perfectly valid audio files otherwise. */}
@@ -162,7 +164,7 @@ export function WelcomeScreen(props: {
           </div>
         ) : selectedFile === null ? (
           <div className="flex flex-col items-center gap-4 px-8 py-12 text-center bg-black">
-            <h2 className="text-3xl text-white">Convert audio to MIDI</h2>
+            <h2 className="text-3xl text-white">Convert music to MIDI or sheet music</h2>
             <div className="wave-mark h-16 w-32 bg-accent" aria-hidden="true" />
             <p className="m-0 text-base text-muted">
               {dragging ? (
