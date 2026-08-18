@@ -46,6 +46,13 @@ const CLIENT_ID =
     ? crypto.randomUUID()
     : `c-${Math.floor(performance.now())}-${Math.random().toString(36).slice(2)}`;
 
+/** A tempo as a 10-BPM band, e.g. 154.98 → "150-159". Zero-padded to three
+ *  digits so GA4's alphabetical dimension sort is also numerical order. */
+export function bpmBucket(bpm: number): string {
+  const low = Math.floor(bpm / 10) * 10;
+  return `${String(low).padStart(3, "0")}-${String(low + 9).padStart(3, "0")}`;
+}
+
 export interface TranscriptionDeps {
   audio: AudioEngine;
   /** Holds the PianoRoll once the canvas has mounted (may be null very early). */
@@ -205,6 +212,8 @@ export function useTranscription(deps: TranscriptionDeps) {
     let startedAt = submittedAt;
     let maxEnd = 0;
     let noteCount = 0;
+    // Kept for the completion event, which fires after the stream has ended.
+    let beatGrid: BeatGrid | null = null;
     try {
       const cond = getConditioning();
       const extra = cond.length > 0 ? { instruments: cond } : undefined;
@@ -238,8 +247,9 @@ export function useTranscription(deps: TranscriptionDeps) {
           // Tempo came with it — redraw the time grid as bars instead of seconds,
           // and move the notes onto the beats (the MIDI above already has them
           // there), in the roll and in the scheduled playback alike.
-          rollRef.current?.setBeatGrid(ev.beat_grid ?? null);
-          audio.shiftNotes(-(ev.beat_grid?.onset_delay ?? 0));
+          beatGrid = ev.beat_grid ?? null;
+          rollRef.current?.setBeatGrid(beatGrid);
+          audio.shiftNotes(-(beatGrid?.onset_delay ?? 0));
           continue;
         }
         if (ev.type === "progress") {
@@ -265,16 +275,18 @@ export function useTranscription(deps: TranscriptionDeps) {
         detected_instruments: Array.from(knownRef.current).sort().join(","),
         detected_count: knownRef.current.size,
         note_count: noteCount,
+        tempo_detected: beatGrid !== null,
+        bpm: beatGrid ? Math.round(beatGrid.bpm) : undefined,
+        // Bucketed and reported as string so that we can also have (in Google Analytics terms)
+        // a "dimension" and not just a "metric" to average
+        bpm_bucket: beatGrid ? bpmBucket(beatGrid.bpm) : undefined,
+        beats_per_bar: beatGrid?.beats_per_bar ?? undefined,
       });
     } catch (e) {
       // An abort (from being superseded) surfaces here as an error — ignore it
       // so it can't clobber the newer run.
       if (isStale() || controller.signal.aborted) return;
       setAppState("error");
-      track("transcription_error", {
-        status: e instanceof TranscribeError ? e.status : undefined,
-        message: e instanceof Error ? e.message : String(e),
-      });
       // Prefer the server's explanation (e.g. an undecodable file) over a
       // generic message; fall back when the failure was a network error or
       // the server gave no detail.
@@ -282,6 +294,10 @@ export function useTranscription(deps: TranscriptionDeps) {
         e instanceof TranscribeError && e.userMessage
           ? e.userMessage
           : "The muscriptor server is temporarily unavailable. Please try again later.";
+      track("transcription_error", {
+        status: e instanceof TranscribeError ? e.status : undefined,
+        message: (e instanceof Error ? e.message : String(e)) + ": " + message,
+      });
       onError(message);
     } finally {
       if (activeRef.current === controller) activeRef.current = null;

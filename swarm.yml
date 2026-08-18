@@ -25,6 +25,9 @@ services:
       - "--metrics.prometheus=true"
       # Healthcheck
       - "--ping=true"
+
+      - "--accesslog=true"
+      - "--accesslog.format=json"
     healthcheck:
       test: ["CMD", "traefik", "healthcheck", "--ping"]
     ports:
