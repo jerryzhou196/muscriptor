@@ -1,11 +1,12 @@
 /**
- * Decoding, peak extraction and WAV encoding for the waveform editor.
+ * Decoding and WAV encoding for the waveform editor.
  *
  * The editor trims in the browser rather than sending offsets to the server:
- * the file is already decoded here to draw it, so cutting the region out costs
- * one array copy, and the upload shrinks to the part the user actually wants
- * transcribed. `/transcribe` reads PCM WAV through the stdlib `wave` module
- * (see `muscriptor/utils/audio.py`), which is exactly what `encodeWav` writes.
+ * the file is already decoded here to feed WaveSurfer its peaks, so cutting the
+ * region out costs one array copy, and the upload shrinks to the part the user
+ * actually wants transcribed. `/transcribe` reads PCM WAV through the stdlib
+ * `wave` module (see `muscriptor/utils/audio.py`), which is what `encodeWav`
+ * writes.
  */
 
 /**
@@ -18,30 +19,6 @@
 export async function decodeAudioFile(file: File): Promise<AudioBuffer> {
   const ctx = new OfflineAudioContext(1, 1, 44100);
   return await ctx.decodeAudioData(await file.arrayBuffer());
-}
-
-/**
- * Envelope of `buffer` as `bins` amplitudes in [0, 1]: the loudest sample in
- * each bin, across every channel. Drawn mirrored around the centre line, so
- * one value per bin is enough — the shape of a waveform is symmetric anyway.
- */
-export function peaks(buffer: AudioBuffer, bins: number): Float32Array {
-  const out = new Float32Array(bins);
-  const perBin = buffer.length / bins;
-  for (let c = 0; c < buffer.numberOfChannels; c++) {
-    const data = buffer.getChannelData(c);
-    for (let b = 0; b < bins; b++) {
-      const from = Math.floor(b * perBin);
-      const to = Math.min(data.length, Math.floor((b + 1) * perBin));
-      let max = out[b];
-      for (let i = from; i < to; i++) {
-        const v = data[i] < 0 ? -data[i] : data[i];
-        if (v > max) max = v;
-      }
-      out[b] = max;
-    }
-  }
-  return out;
 }
 
 /** 16-bit PCM WAV bytes for interleaved-on-write `channels` of equal length. */
