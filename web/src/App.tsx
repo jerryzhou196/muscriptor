@@ -11,6 +11,8 @@ import { InstrumentList } from "./components/InstrumentList";
 import { DropOverlay } from "./components/DropOverlay";
 import { Footer, PartnerLogos } from "./components/Footer";
 import { WelcomeScreen } from "./components/WelcomeScreen";
+import { type Trim } from "./components/WaveformEditor";
+import { trimToWavFile } from "./waveform";
 import { ConsentBanner } from "./components/ConsentBanner";
 import { Faq } from "./components/Faq";
 import { track } from "./analytics";
@@ -86,6 +88,8 @@ export function App() {
   // True while a file is being dragged over the window. On the welcome screen
   // this swaps the panel's prompt in place instead of showing the overlay.
   const [dragging, setDragging] = useState(false);
+  // The span dragged out in the waveform editor, or null for the whole file.
+  const [trim, setTrim] = useState<Trim | null>(null);
 
   const midiFilenameRef = useRef("transcription.mid");
   // Mirror of the selected conditioning set, read at submit time without
@@ -131,17 +135,26 @@ export function App() {
   // happens under a user gesture.
   function startTranscription() {
     if (selectedFile === null || submit.phase !== "idle") return;
+    // A trimmed selection is re-encoded as WAV; without one the file goes up
+    // untouched, so the common case neither re-encodes nor loses quality.
+    const upload =
+      trim === null
+        ? selectedFile
+        : trimToWavFile(selectedFile, trim.buffer, trim.start, trim.end);
     track("transcription_start", {
       instruments: Array.from(condSelected).sort().join(",") || "(none)",
       instrument_count: condSelected.size,
       is_example: selectedFile.name === EXAMPLE.filename,
       file_type: (selectedFile.name.match(/\.([^./]+)$/)?.[1] ?? "unknown").toLowerCase(),
       file_size_mb: Math.round(selectedFile.size / 1e5) / 10,
+      trimmed: trim !== null,
+      // Only known when trimmed; `track` drops undefined params.
+      trimmed_seconds: trim === null ? undefined : Math.round(trim.end - trim.start),
     });
     // Drop any leftover file error from a previous failed attempt.
     setError(null);
     setSubmit({ phase: "submitting" });
-    transcribe(selectedFile);
+    transcribe(upload);
   }
 
   // Give up on a submission that hasn't been accepted yet (in flight, or waiting
@@ -394,6 +407,7 @@ export function App() {
             onUseExample={useExample}
             condSelected={condSelected}
             onCondChange={setCondSelected}
+            onTrimChange={setTrim}
             onTranscribe={startTranscription}
             submitState={submit}
             onCancelSubmit={cancelSubmit}

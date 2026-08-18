@@ -8,6 +8,7 @@ import {
 import clsx from "clsx";
 import { Button } from "./Button";
 import { ConditioningPanel } from "./ConditioningPanel";
+import { WaveformEditor, type Trim } from "./WaveformEditor";
 import type { AppError, SubmitState } from "../App";
 
 const SERVER_DOWN = "The muscriptor server is temporarily unavailable.";
@@ -49,6 +50,8 @@ export function WelcomeScreen(props: {
   onUseExample: () => Promise<void>;
   condSelected: Set<string>;
   onCondChange: (next: Set<string>) => void;
+  /** The span picked in the waveform editor, or null for the whole file. */
+  onTrimChange: (trim: Trim | null) => void;
   onTranscribe: () => void;
   /** Where the submitted upload stands; drives the CTA's label + disabled state
    *  (the screen stays put until the server accepts it). */
@@ -67,6 +70,7 @@ export function WelcomeScreen(props: {
     onUseExample,
     condSelected,
     onCondChange,
+    onTrimChange,
     onTranscribe,
     submitState,
     onCancelSubmit,
@@ -197,6 +201,13 @@ export function WelcomeScreen(props: {
 
       {error?.kind !== "server" && selectedFile !== null && (
         <>
+          {/* Keyed on the file so a re-pick decodes from scratch rather than
+              showing the previous track's waveform while it loads. */}
+          <WaveformEditor
+            key={selectedFile.name + selectedFile.size}
+            file={selectedFile}
+            onChange={onTrimChange}
+          />
           <ConditioningPanel selected={condSelected} onChange={onCondChange} />
           <div className="flex items-center justify-end gap-5">
             {submitting && (
