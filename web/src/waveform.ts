@@ -1,0 +1,114 @@
+/**
+ * Decoding, peak extraction and WAV encoding for the waveform editor.
+ *
+ * The editor trims in the browser rather than sending offsets to the server:
+ * the file is already decoded here to draw it, so cutting the region out costs
+ * one array copy, and the upload shrinks to the part the user actually wants
+ * transcribed. `/transcribe` reads PCM WAV through the stdlib `wave` module
+ * (see `muscriptor/utils/audio.py`), which is exactly what `encodeWav` writes.
+ */
+
+/**
+ * Decode an audio file to raw samples.
+ *
+ * Uses an OfflineAudioContext because the welcome screen has no user gesture
+ * yet — a real AudioContext would be created suspended and count against
+ * Safari's per-page limit, while decoding never touches the output device.
+ */
+export async function decodeAudioFile(file: File): Promise<AudioBuffer> {
+  const ctx = new OfflineAudioContext(1, 1, 44100);
+  return await ctx.decodeAudioData(await file.arrayBuffer());
+}
+
+/**
+ * Envelope of `buffer` as `bins` amplitudes in [0, 1]: the loudest sample in
+ * each bin, across every channel. Drawn mirrored around the centre line, so
+ * one value per bin is enough — the shape of a waveform is symmetric anyway.
+ */
+export function peaks(buffer: AudioBuffer, bins: number): Float32Array {
+  const out = new Float32Array(bins);
+  const perBin = buffer.length / bins;
+  for (let c = 0; c < buffer.numberOfChannels; c++) {
+    const data = buffer.getChannelData(c);
+    for (let b = 0; b < bins; b++) {
+      const from = Math.floor(b * perBin);
+      const to = Math.min(data.length, Math.floor((b + 1) * perBin));
+      let max = out[b];
+      for (let i = from; i < to; i++) {
+        const v = data[i] < 0 ? -data[i] : data[i];
+        if (v > max) max = v;
+      }
+      out[b] = max;
+    }
+  }
+  return out;
+}
+
+/** 16-bit PCM WAV bytes for interleaved-on-write `channels` of equal length. */
+export function encodeWav(channels: Float32Array[], sampleRate: number): Blob {
+  const numChannels = channels.length;
+  const frames = channels[0].length;
+  const dataBytes = frames * numChannels * 2;
+  const buf = new ArrayBuffer(44 + dataBytes);
+  const view = new DataView(buf);
+
+  const ascii = (offset: number, s: string) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
+  };
+  ascii(0, "RIFF");
+  view.setUint32(4, 36 + dataBytes, true);
+  ascii(8, "WAVE");
+  ascii(12, "fmt ");
+  view.setUint32(16, 16, true); // PCM header size
+  view.setUint16(20, 1, true); // format: uncompressed PCM
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * numChannels * 2, true); // byte rate
+  view.setUint16(32, numChannels * 2, true); // block align
+  view.setUint16(34, 16, true); // bits per sample
+  ascii(36, "data");
+  view.setUint32(40, dataBytes, true);
+
+  let offset = 44;
+  for (let i = 0; i < frames; i++) {
+    for (let c = 0; c < numChannels; c++) {
+      // Clamp before scaling: decoded float samples can overshoot ±1 (lossy
+      // formats do this routinely) and would wrap around as int16.
+      const s = Math.max(-1, Math.min(1, channels[c][i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      offset += 2;
+    }
+  }
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+/**
+ * The `[start, end)` seconds of `buffer` as a WAV file named after `file`.
+ *
+ * The name keeps the original stem so the downloaded MIDI is still recognisable
+ * (`midiFilenameRef` derives from it), with the trimmed span appended.
+ */
+export function trimToWavFile(
+  file: File,
+  buffer: AudioBuffer,
+  start: number,
+  end: number,
+): File {
+  const from = Math.max(0, Math.floor(start * buffer.sampleRate));
+  const to = Math.min(buffer.length, Math.ceil(end * buffer.sampleRate));
+  const channels = [];
+  for (let c = 0; c < buffer.numberOfChannels; c++) {
+    channels.push(buffer.getChannelData(c).slice(from, to));
+  }
+  const blob = encodeWav(channels, buffer.sampleRate);
+  const stem = file.name.replace(/\.[^/.]+$/, "");
+  return new File([blob], `${stem} (${formatTime(start)}-${formatTime(end)}).wav`, {
+    type: "audio/wav",
+  });
+}
+
+/** `m:ss` for a duration in seconds — the editor's labels and trimmed names. */
+export function formatTime(seconds: number): string {
+  const whole = Math.round(seconds);
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+}
