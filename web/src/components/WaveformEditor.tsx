@@ -155,6 +155,32 @@ export function WaveformEditor(props: {
     travel(target);
   }
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        (!event.metaKey && !event.ctrlKey) ||
+        event.altKey ||
+        event.key.toLowerCase() !== "z"
+      ) {
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      if (
+        target?.isContentEditable ||
+        target?.tagName === "INPUT" ||
+        target?.tagName === "TEXTAREA" ||
+        target?.tagName === "SELECT"
+      ) {
+        return;
+      }
+      event.preventDefault();
+      if (event.shiftKey) redo();
+      else undo();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [past, future, buffer]);
+
   /** Delete the selection; what is left of the track closes the gap. */
   function removeSelection() {
     if (buffer === null || range === null) return;
