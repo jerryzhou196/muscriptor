@@ -21,6 +21,33 @@ export async function decodeAudioFile(file: File): Promise<AudioBuffer> {
   return await ctx.decodeAudioData(await file.arrayBuffer());
 }
 
+/**
+ * `buffer` with the `[start, end)` seconds removed and the two remaining
+ * pieces butted together.
+ *
+ * Cutting on a sample boundary can click if the join lands mid-cycle; that is
+ * audible in the preview but harmless to transcribe, which is what this audio
+ * is for. Callers must not cut the whole buffer away — a zero-length
+ * AudioBuffer is invalid.
+ */
+export function cutRegion(buffer: AudioBuffer, start: number, end: number): AudioBuffer {
+  const rate = buffer.sampleRate;
+  const from = Math.max(0, Math.round(start * rate));
+  const to = Math.min(buffer.length, Math.round(end * rate));
+  const out = new AudioBuffer({
+    length: buffer.length - (to - from),
+    numberOfChannels: buffer.numberOfChannels,
+    sampleRate: rate,
+  });
+  for (let c = 0; c < buffer.numberOfChannels; c++) {
+    const src = buffer.getChannelData(c);
+    const dst = out.getChannelData(c);
+    dst.set(src.subarray(0, from), 0);
+    dst.set(src.subarray(to), from);
+  }
+  return out;
+}
+
 /** 16-bit PCM WAV bytes for interleaved-on-write `channels` of equal length. */
 export function encodeWav(channels: Float32Array[], sampleRate: number): Blob {
   const numChannels = channels.length;
