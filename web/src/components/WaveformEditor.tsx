@@ -6,30 +6,14 @@ import {
   cutRegion,
   decodeAudioFile,
   formatTime,
+  trimToWavFile,
 } from "../waveform";
 
-/** The audio to transcribe, and the span of it to keep. */
-export type Trim = { buffer: AudioBuffer; start: number; end: number };
-
-/** A selection, or null for "all of the current audio". */
 type Range = [number, number] | null;
 
-/**
- * Waveform of the picked file, with a selection to play, cut, or crop to.
- *
- * Modelled on AudioMass: the decoded AudioBuffer is the document, and every
- * edit builds a new buffer and reloads the view from it. Previous buffers stay
- * in local history so Command/Control-Z can undo without re-decoding the file.
- * Drawing and playback live in `useWaveform`.
- *
- * A file Web Audio cannot decode renders nothing and reports no trim. The
- * server may still read it, so this must never block a transcription, only
- * decline to offer the editor.
- */
 export function WaveformEditor(props: {
   file: File;
-  /** The audio to upload, or null when the untouched file should go up. */
-  onChange: (trim: Trim | null) => void;
+  onChange: (file: File) => void;
 }) {
   const { file, onChange } = props;
 
@@ -54,19 +38,23 @@ export function WaveformEditor(props: {
     active: !failed,
   });
   const selected = range === null ? 0 : range[1] - range[0];
-  // An edit may consume neither the whole track nor none of it: a zero-length
-  // AudioBuffer is invalid. The tolerance covers a drag landing a sample short.
   const canEdit = selected > 0.01 && selected < duration - 0.01;
 
-  // The upload: the selection if there is one, the whole buffer once edited,
-  // and null while the audio is still exactly what the user picked.
   useEffect(() => {
-    if (buffer === null || (!edited && range === null)) onChange(null);
-    else if (range === null) onChange({ buffer, start: 0, end: duration });
-    else onChange({ buffer, start: range[0], end: range[1] });
-  }, [buffer, range, edited, duration, onChange]);
+    if (buffer === null || (!edited && range === null)) {
+      onChange(file);
+      return;
+    }
+    onChange(
+      trimToWavFile(
+        file,
+        buffer,
+        range?.[0] ?? 0,
+        range?.[1] ?? duration,
+      ),
+    );
+  }, [buffer, range, edited, duration, file, onChange]);
 
-  // Decode once per file; everything below works off the buffer.
   useEffect(() => {
     let cancelled = false;
     setFailed(false);
@@ -89,14 +77,12 @@ export function WaveformEditor(props: {
     };
   }, [file]);
 
-  /** Show an audio state without recording how we got there. */
   function showAudio(next: AudioBuffer) {
     pause();
     setRange(null);
     setBuffer(next);
   }
 
-  /** Swap in an edit and discard any redo path from the current state. */
   function replaceAudio(next: AudioBuffer) {
     if (buffer === null) return;
     setPast((p) => [...p, buffer]);
