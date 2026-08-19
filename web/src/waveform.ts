@@ -1,33 +1,55 @@
 /**
- * Decoding and WAV encoding for the waveform editor.
+ * Buffer maths for the waveform editor.
  *
- * The editor trims in the browser rather than sending offsets to the server:
- * the file is already decoded here to feed WaveSurfer its peaks, so cutting the
- * region out costs one array copy, and the upload shrinks to the part the user
- * actually wants transcribed. `/transcribe` reads PCM WAV through the stdlib
- * `wave` module (see `muscriptor/utils/audio.py`), which is what `encodeWav`
- * writes.
+ * Edits happen in the browser rather than as offsets sent to the server: the
+ * file is decoded here anyway to draw it, so a cut is one array copy and the
+ * upload shrinks to the part worth transcribing. `/transcribe` reads PCM WAV
+ * (`muscriptor/utils/audio.py`), which is what `encodeWav` writes.
  */
 
 /**
  * Decode an audio file to raw samples.
  *
- * Uses an OfflineAudioContext because the welcome screen has no user gesture
- * yet — a real AudioContext would be created suspended and count against
- * Safari's per-page limit, while decoding never touches the output device.
+ * OfflineAudioContext because the welcome screen has no user gesture yet: a
+ * real AudioContext would be created suspended and count against Safari's
+ * per-page limit, while decoding never touches the output device.
  */
 export async function decodeAudioFile(file: File): Promise<AudioBuffer> {
   const ctx = new OfflineAudioContext(1, 1, 44100);
   return await ctx.decodeAudioData(await file.arrayBuffer());
 }
 
+/** The `[start, end)` seconds of each channel, as plain sample arrays. */
+function sliceChannels(buffer: AudioBuffer, start: number, end: number): Float32Array[] {
+  const from = Math.max(0, Math.round(start * buffer.sampleRate));
+  const to = Math.min(buffer.length, Math.round(end * buffer.sampleRate));
+  return Array.from({ length: buffer.numberOfChannels }, (_, c) =>
+    buffer.getChannelData(c).slice(from, to),
+  );
+}
+
 /**
- * `buffer` with the `[start, end)` seconds removed and the two remaining
- * pieces butted together.
+ * Just the `[start, end)` seconds of `buffer` — crop to the selection.
  *
- * Cutting on a sample boundary can click if the join lands mid-cycle; that is
- * audible in the preview but harmless to transcribe, which is what this audio
- * is for. Callers must not cut the whole buffer away — a zero-length
+ * The region must not be empty: a zero-length AudioBuffer is invalid.
+ */
+export function copyRegion(buffer: AudioBuffer, start: number, end: number): AudioBuffer {
+  const channels = sliceChannels(buffer, start, end);
+  const out = new AudioBuffer({
+    length: channels[0].length,
+    numberOfChannels: channels.length,
+    sampleRate: buffer.sampleRate,
+  });
+  channels.forEach((data, c) => out.getChannelData(c).set(data));
+  return out;
+}
+
+/**
+ * `buffer` with the `[start, end)` seconds removed and the remaining pieces
+ * butted together.
+ *
+ * The join can click if it lands mid-cycle: audible in the preview, harmless
+ * to transcribe. The whole buffer must not be cut away — a zero-length
  * AudioBuffer is invalid.
  */
 export function cutRegion(buffer: AudioBuffer, start: number, end: number): AudioBuffer {
@@ -46,6 +68,52 @@ export function cutRegion(buffer: AudioBuffer, start: number, end: number): Audi
     dst.set(src.subarray(to), from);
   }
   return out;
+}
+
+/**
+ * `buffer`'s channels reduced to a min/max envelope for drawing.
+ *
+ * WaveSurfer scans whatever array it is given for each pixel column's min and
+ * max, so raw samples make every zoom step rescan millions of them (~50ms per
+ * wheel event on a 72s track, and a trackpad fires dozens per gesture). This
+ * is the same peak cache AudioMass keeps, computed once per buffer.
+ *
+ * Each bucket contributes its minimum *and* maximum, in that order, so both
+ * halves of the waveform survive; plain subsampling would alias into a
+ * quieter, wrong-shaped signal. `pointsPerSecond` is display resolution, not
+ * the audio's — the editor cannot zoom past ~1 second across the card, so 2000
+ * is already several points per pixel at the deepest zoom.
+ *
+ * Peaks are only ever drawn. Playback and the upload read `buffer` itself.
+ */
+export function peakEnvelope(buffer: AudioBuffer, pointsPerSecond = 2000): Float32Array[] {
+  const buckets = Math.ceil((buffer.duration * pointsPerSecond) / 2);
+  const per = Math.floor(buffer.length / buckets);
+  const channels = Array.from({ length: buffer.numberOfChannels }, (_, c) =>
+    buffer.getChannelData(c),
+  );
+  // Short or low-rate audio can already be coarser than the target; reducing
+  // it further would throw away detail the display can show.
+  if (per < 2) return channels;
+
+  return channels.map((src) => {
+    const out = new Float32Array(buckets * 2);
+    for (let b = 0; b < buckets; b++) {
+      const from = b * per;
+      // The last bucket takes the remainder, so no samples go unlooked-at.
+      const to = b === buckets - 1 ? buffer.length : from + per;
+      let min = src[from];
+      let max = min;
+      for (let i = from + 1; i < to; i++) {
+        const v = src[i];
+        if (v < min) min = v;
+        else if (v > max) max = v;
+      }
+      out[b * 2] = min;
+      out[b * 2 + 1] = max;
+    }
+    return out;
+  });
 }
 
 /** 16-bit PCM WAV bytes for interleaved-on-write `channels` of equal length. */
@@ -89,8 +157,8 @@ export function encodeWav(channels: Float32Array[], sampleRate: number): Blob {
 /**
  * The `[start, end)` seconds of `buffer` as a WAV file named after `file`.
  *
- * The name keeps the original stem so the downloaded MIDI is still recognisable
- * (`midiFilenameRef` derives from it), with the trimmed span appended.
+ * The name keeps the original stem, so the downloaded MIDI is still
+ * recognisable (`midiFilenameRef` derives from it).
  */
 export function trimToWavFile(
   file: File,
@@ -98,13 +166,7 @@ export function trimToWavFile(
   start: number,
   end: number,
 ): File {
-  const from = Math.max(0, Math.floor(start * buffer.sampleRate));
-  const to = Math.min(buffer.length, Math.ceil(end * buffer.sampleRate));
-  const channels = [];
-  for (let c = 0; c < buffer.numberOfChannels; c++) {
-    channels.push(buffer.getChannelData(c).slice(from, to));
-  }
-  const blob = encodeWav(channels, buffer.sampleRate);
+  const blob = encodeWav(sliceChannels(buffer, start, end), buffer.sampleRate);
   const stem = file.name.replace(/\.[^/.]+$/, "");
   return new File([blob], `${stem} (${formatTime(start)}-${formatTime(end)}).wav`, {
     type: "audio/wav",

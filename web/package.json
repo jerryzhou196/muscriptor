@@ -8,8 +8,7 @@
     "dev": "vite",
     "dev:proxy": "BACKEND_URL=https://muscriptor.kyutai.org vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview",
-    "test": "node --test --experimental-strip-types src/*.test.ts"
+    "preview": "vite preview"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.2",
