@@ -9,6 +9,7 @@ import clsx from "clsx";
 import { Button } from "./Button";
 import { ConditioningPanel } from "./ConditioningPanel";
 import { WaveformEditor } from "./WaveformEditor";
+import type { AudioEdit } from "../audio-edit";
 import type { AppError, SubmitState } from "../App";
 
 const SERVER_DOWN = "The muscriptor server is temporarily unavailable.";
@@ -53,7 +54,7 @@ export function WelcomeScreen(props: {
   onUseExample: () => Promise<void>;
   condSelected: Set<string>;
   onCondChange: (next: Set<string>) => void;
-  setFile: (file: File) => void;
+  setEdit: (edit: AudioEdit | null) => void;
   onTranscribe: () => void;
   /** Where the submitted upload stands; drives the CTA's label + disabled state
    *  (the screen stays put until the server accepts it). */
@@ -72,7 +73,7 @@ export function WelcomeScreen(props: {
     onUseExample,
     condSelected,
     onCondChange,
-    setFile,
+    setEdit,
     onTranscribe,
     submitState,
     onCancelSubmit,
@@ -214,7 +215,7 @@ export function WelcomeScreen(props: {
           <WaveformEditor
             key={selectedFile.name + selectedFile.size}
             file={selectedFile}
-            setFile={setFile}
+            setEdit={setEdit}
           />
           <ConditioningPanel selected={condSelected} onChange={onCondChange} />
           <div className="flex items-center justify-end gap-5">

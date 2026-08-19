@@ -2,18 +2,12 @@ import { useEffect, useRef, type Ref } from "react";
 import WaveSurfer from "wavesurfer.js";
 import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.esm.js";
 import ZoomPlugin from "wavesurfer.js/dist/plugins/zoom.esm.js";
-import { encodeWav, peakEnvelope } from "../waveform";
+import { channelsOf, encodeWav, peakEnvelope } from "../audio-edit";
 
 const WAVE = "#5a5c68";
 const PROGRESS = "#ff5b7a";
 const REGION = "rgba(255, 91, 122, 0.16)";
 const HEIGHT = 96;
-
-function regionsOf(wave: WaveSurfer) {
-  return wave
-    .getActivePlugins()
-    .find((plugin): plugin is RegionsPlugin => plugin instanceof RegionsPlugin);
-}
 
 type WaveformParams = {
   file: File;
@@ -44,6 +38,7 @@ export function useWaveform({
 }: WaveformParams) {
   const containerRef = useRef<HTMLDivElement>(null);
   const waveRef = useRef<WaveSurfer | null>(null);
+  const regionsRef = useRef<RegionsPlugin | null>(null);
 
   useEffect(() => {
     if (!active || containerRef.current === null) return;
@@ -57,25 +52,22 @@ export function useWaveform({
       normalize: true,
     });
     const regions = wave.registerPlugin(RegionsPlugin.create());
-    // Scroll or pinch to zoom at the pointer. Wheel events whose horizontal
-    // delta dominates are left alone, so a sideways swipe and the scrollbar
-    // pan instead.
+    regionsRef.current = regions;
     wave.registerPlugin(
       ZoomPlugin.create({ exponentialZooming: true, iterations: 24 }),
     );
     waveRef.current = wave;
     regions.enableDragSelection({ color: REGION });
 
-    // RegionsPlugin scrolls the waveform to follow a region as it moves. Keep
-    // the viewport fixed during that gesture; normal scrollbar and trackpad
-    // panning still work when the user is not dragging a region.
     let regionDragScroll: number | null = null;
     const wrapper = wave.getWrapper();
     const rememberRegionDragScroll = (event: PointerEvent) => {
       const path = event.composedPath();
       regionDragScroll = regions
         .getRegions()
-        .some((region) => region.element !== null && path.includes(region.element))
+        .some(
+          (region) => region.element !== null && path.includes(region.element),
+        )
         ? wave.getScroll()
         : null;
     };
@@ -110,6 +102,7 @@ export function useWaveform({
     return () => {
       wrapper.removeEventListener("pointerdown", rememberRegionDragScroll);
       waveRef.current = null;
+      regionsRef.current = null;
       wave.destroy();
     };
   }, [active]);
@@ -118,16 +111,11 @@ export function useWaveform({
     const wave = waveRef.current;
     if (wave === null || buffer === null) return;
 
-    regionsOf(wave)?.clearRegions();
+    regionsRef.current?.clearRegions();
 
     let cancelled = false;
     const blob = edited
-      ? encodeWav(
-          Array.from({ length: buffer.numberOfChannels }, (_, c) =>
-            buffer.getChannelData(c),
-          ),
-          buffer.sampleRate,
-        )
+      ? encodeWav(channelsOf(buffer), buffer.sampleRate)
       : file;
     wave.loadBlob(blob, peakEnvelope(buffer), buffer.duration).catch(() => {
       if (!cancelled) onError();
@@ -140,15 +128,13 @@ export function useWaveform({
 
   // Parent cleared the selection (button, cut, crop); drop the plugin box.
   useEffect(() => {
-    if (range !== null) return;
-    const wave = waveRef.current;
-    if (wave !== null) regionsOf(wave)?.clearRegions();
+    if (range === null) regionsRef.current?.clearRegions();
   }, [range]);
 
   function playPause() {
     const wave = waveRef.current;
     if (wave === null) return;
-    const region = regionsOf(wave)?.getRegions()[0];
+    const region = regionsRef.current?.getRegions()[0];
     if (wave.isPlaying()) wave.pause();
     else if (region !== undefined) region.play(true);
     else wave.play();

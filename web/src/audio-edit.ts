@@ -3,18 +3,31 @@ export async function decodeAudioFile(file: File): Promise<AudioBuffer> {
   return await ctx.decodeAudioData(await file.arrayBuffer());
 }
 
+/** The buffer's channels, unwrapped into the array shape everything here uses. */
+export function channelsOf(buffer: AudioBuffer): Float32Array[] {
+  return Array.from({ length: buffer.numberOfChannels }, (_, c) =>
+    buffer.getChannelData(c),
+  );
+}
+
+/** Sample offsets of a start/end span in seconds, clamped to the buffer. */
+function boundsOf(buffer: AudioBuffer, start: number, end: number) {
+  return [
+    Math.max(0, Math.round(start * buffer.sampleRate)),
+    Math.min(buffer.length, Math.round(end * buffer.sampleRate)),
+  ];
+}
+
 function sliceChannels(
   buffer: AudioBuffer,
   start: number,
   end: number,
 ): Float32Array[] {
-  const from = Math.max(0, Math.round(start * buffer.sampleRate));
-  const to = Math.min(buffer.length, Math.round(end * buffer.sampleRate));
-  return Array.from({ length: buffer.numberOfChannels }, (_, c) =>
-    buffer.getChannelData(c).slice(from, to),
-  );
+  const [from, to] = boundsOf(buffer, start, end);
+  return channelsOf(buffer).map((data) => data.slice(from, to));
 }
 
+/** The selection on its own. */
 export function copyRegion(
   buffer: AudioBuffer,
   start: number,
@@ -30,37 +43,37 @@ export function copyRegion(
   return out;
 }
 
+/** Everything but the selection, with the gap closed. */
 export function cutRegion(
   buffer: AudioBuffer,
   start: number,
   end: number,
 ): AudioBuffer {
-  const rate = buffer.sampleRate;
-  const from = Math.max(0, Math.round(start * rate));
-  const to = Math.min(buffer.length, Math.round(end * rate));
+  const [from, to] = boundsOf(buffer, start, end);
   const out = new AudioBuffer({
     length: buffer.length - (to - from),
     numberOfChannels: buffer.numberOfChannels,
-    sampleRate: rate,
+    sampleRate: buffer.sampleRate,
   });
-  for (let c = 0; c < buffer.numberOfChannels; c++) {
-    const src = buffer.getChannelData(c);
+  channelsOf(buffer).forEach((src, c) => {
     const dst = out.getChannelData(c);
     dst.set(src.subarray(0, from), 0);
     dst.set(src.subarray(to), from);
-  }
+  });
   return out;
 }
 
+/**
+ * Min/max pair per bucket, handed to WaveSurfer with the blob so it renders
+ * from samples we already hold instead of decoding the audio a second time.
+ */
 export function peakEnvelope(
   buffer: AudioBuffer,
   pointsPerSecond = 2000,
 ): Float32Array[] {
   const buckets = Math.ceil((buffer.duration * pointsPerSecond) / 2);
   const per = Math.floor(buffer.length / buckets);
-  const channels = Array.from({ length: buffer.numberOfChannels }, (_, c) =>
-    buffer.getChannelData(c),
-  );
+  const channels = channelsOf(buffer);
   if (per < 2) return channels;
 
   return channels.map((src) => {
@@ -118,20 +131,26 @@ export function encodeWav(channels: Float32Array[], sampleRate: number): Blob {
   return new Blob([buf], { type: "audio/wav" });
 }
 
-export function trimToWavFile(
-  file: File,
-  buffer: AudioBuffer,
-  start: number,
-  end: number,
-): File {
+/** The span of an edited buffer that will be uploaded, kept unencoded. */
+export type AudioEdit = {
+  buffer: AudioBuffer;
+  start: number;
+  end: number;
+};
+
+/**
+ * Encode a pending edit as the WAV that gets uploaded. Called once, at submit
+ * time: encoding walks every sample, so doing it eagerly would re-run on each
+ * region drag and each cut.
+ */
+export function editToWavFile(file: File, edit: AudioEdit): File {
+  const { buffer, start, end } = edit;
   const blob = encodeWav(sliceChannels(buffer, start, end), buffer.sampleRate);
   const stem = file.name.replace(/\.[^/.]+$/, "");
   return new File(
     [blob],
     `${stem} (${formatTime(start)}-${formatTime(end)}).wav`,
-    {
-      type: "audio/wav",
-    },
+    { type: "audio/wav" },
   );
 }
 

@@ -3,10 +3,6 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    // So `./waveform.ts` in the node --test file resolves for both tsc and node.
-    "allowImportingTsExtensions": true,
-    // `node --test` runs src/waveform.test.ts directly (Node strips the types).
-    "types": ["node"],
     "jsx": "react-jsx",
     "strict": true,
     "noUnusedLocals": true,

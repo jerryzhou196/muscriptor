@@ -1,26 +1,25 @@
 import { useEffect, useState } from "react";
 import { Button } from "./Button";
 import { Waveform, useWaveform } from "./Waveform";
+import { useAudioHistory } from "../hooks/useAudioHistory";
 import {
   copyRegion,
   cutRegion,
   decodeAudioFile,
   formatTime,
-  trimToWavFile,
-} from "../waveform";
+  type AudioEdit,
+} from "../audio-edit";
 
 type Range = [number, number] | null;
 
 export function WaveformEditor(props: {
   file: File;
-  setFile: (file: File) => void;
+  setEdit: (edit: AudioEdit | null) => void;
 }) {
-  const { file, setFile } = props;
+  const { file, setEdit } = props;
 
   const [buffer, setBuffer] = useState<AudioBuffer | null>(null);
   const [original, setOriginal] = useState<AudioBuffer | null>(null);
-  const [past, setPast] = useState<AudioBuffer[]>([]);
-  const [future, setFuture] = useState<AudioBuffer[]>([]);
   const [range, setRange] = useState<Range>(null);
   const [failed, setFailed] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -37,29 +36,29 @@ export function WaveformEditor(props: {
     onError: () => setFailed(true),
     active: !failed,
   });
+
+  function showAudio(next: AudioBuffer) {
+    pause();
+    setRange(null);
+    setBuffer(next);
+  }
+
+  const replaceAudio = useAudioHistory({ buffer, file, showAudio });
   const selected = range === null ? 0 : range[1] - range[0];
   const canEdit = selected > 0.01 && selected < duration - 0.01;
 
+  // Report the span to upload; it is encoded once, when the user submits.
   useEffect(() => {
     if (buffer === null || (!edited && range === null)) {
-      setFile(file);
+      setEdit(null);
       return;
     }
-    setFile(
-      trimToWavFile(
-        file,
-        buffer,
-        range?.[0] ?? 0,
-        range?.[1] ?? duration,
-      ),
-    );
-  }, [buffer, range, edited, duration, file, setFile]);
+    setEdit({ buffer, start: range?.[0] ?? 0, end: range?.[1] ?? duration });
+  }, [buffer, range, edited, duration, setEdit]);
 
   useEffect(() => {
     let cancelled = false;
     setFailed(false);
-    setPast([]);
-    setFuture([]);
     setBuffer(null);
     setRange(null);
     setOriginal(null);
@@ -77,72 +76,11 @@ export function WaveformEditor(props: {
     };
   }, [file]);
 
-  function showAudio(next: AudioBuffer) {
-    pause();
-    setRange(null);
-    setBuffer(next);
-  }
-
-  function replaceAudio(next: AudioBuffer) {
-    if (buffer === null) return;
-    setPast((p) => [...p, buffer]);
-    setFuture([]);
-    showAudio(next);
-  }
-
-  function undo() {
-    if (buffer === null || past.length === 0) return;
-    const prev = past[past.length - 1];
-    setFuture((f) => [...f, buffer]);
-    setPast((p) => p.slice(0, -1));
-    showAudio(prev);
-  }
-
-  function redo() {
-    if (buffer === null || future.length === 0) return;
-    const next = future[future.length - 1];
-    setPast((p) => [...p, buffer]);
-    setFuture((f) => f.slice(0, -1));
-    showAudio(next);
-  }
-
-  function cut() {
+  function edit(apply: typeof cutRegion) {
     if (buffer !== null && range !== null) {
-      replaceAudio(cutRegion(buffer, range[0], range[1]));
+      replaceAudio(apply(buffer, range[0], range[1]));
     }
   }
-
-  function crop() {
-    if (buffer !== null && range !== null) {
-      replaceAudio(copyRegion(buffer, range[0], range[1]));
-    }
-  }
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (
-        (!event.metaKey && !event.ctrlKey) ||
-        event.altKey ||
-        event.key.toLowerCase() !== "z"
-      ) {
-        return;
-      }
-      const target = event.target as HTMLElement | null;
-      if (
-        target?.isContentEditable ||
-        target?.tagName === "INPUT" ||
-        target?.tagName === "TEXTAREA" ||
-        target?.tagName === "SELECT"
-      ) {
-        return;
-      }
-      event.preventDefault();
-      if (event.shiftKey) redo();
-      else undo();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [buffer, past, future]);
 
   if (failed) return null;
 
@@ -155,14 +93,14 @@ export function WaveformEditor(props: {
           {playing ? "Pause" : range === null ? "Play" : "Play selection"}
         </Button>
         <Button
-          onClick={cut}
+          onClick={() => edit(cutRegion)}
           disabled={!canEdit}
           title="Delete the selection and close the gap"
         >
           Cut selection
         </Button>
         <Button
-          onClick={crop}
+          onClick={() => edit(copyRegion)}
           disabled={!canEdit}
           title="Keep only the selection"
         >
