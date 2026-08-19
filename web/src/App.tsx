@@ -402,7 +402,7 @@ export function App() {
             onUseExample={useExample}
             condSelected={condSelected}
             onCondChange={setCondSelected}
-            onAudioFileChange={setAudioFile}
+            setFile={setAudioFile}
             onTranscribe={startTranscription}
             submitState={submit}
             onCancelSubmit={cancelSubmit}

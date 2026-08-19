@@ -13,9 +13,9 @@ type Range = [number, number] | null;
 
 export function WaveformEditor(props: {
   file: File;
-  onChange: (file: File) => void;
+  setFile: (file: File) => void;
 }) {
-  const { file, onChange } = props;
+  const { file, setFile } = props;
 
   const [buffer, setBuffer] = useState<AudioBuffer | null>(null);
   const [original, setOriginal] = useState<AudioBuffer | null>(null);
@@ -42,10 +42,10 @@ export function WaveformEditor(props: {
 
   useEffect(() => {
     if (buffer === null || (!edited && range === null)) {
-      onChange(file);
+      setFile(file);
       return;
     }
-    onChange(
+    setFile(
       trimToWavFile(
         file,
         buffer,
@@ -53,7 +53,7 @@ export function WaveformEditor(props: {
         range?.[1] ?? duration,
       ),
     );
-  }, [buffer, range, edited, duration, file, onChange]);
+  }, [buffer, range, edited, duration, file, setFile]);
 
   useEffect(() => {
     let cancelled = false;
