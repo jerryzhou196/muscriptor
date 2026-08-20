@@ -94,6 +94,33 @@ def test_event_to_dict_start_and_end():
     }
 
 
+def test_cors_allows_configured_origin_and_client_id_header(monkeypatch):
+    origin = "https://muscriptor.vercel.app"
+    monkeypatch.setenv("MUSCRIPTOR_ALLOWED_ORIGINS", f" {origin}/,*, ")
+    client = TestClient(create_app(make_model()))
+
+    preflight = client.options(
+        "/transcribe",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "X-Client-Id",
+        },
+    )
+    assert preflight.status_code == 200
+    assert preflight.headers["access-control-allow-origin"] == origin
+    assert "X-Client-Id" in preflight.headers["access-control-allow-headers"]
+
+    health = client.get("/health", headers={"Origin": origin})
+    assert health.status_code == 200
+    assert health.headers["access-control-allow-origin"] == origin
+
+    blocked = client.get(
+        "/health", headers={"Origin": "https://not-allowed.example"}
+    )
+    assert "access-control-allow-origin" not in blocked.headers
+
+
 def test_transcribe_streams_sse_events(tmp_path):
     s0 = NoteStartEvent(pitch=60, start_time=0.0, index=0, instrument="piano")
     s1 = NoteStartEvent(pitch=64, start_time=0.1, index=1, instrument="guitar")

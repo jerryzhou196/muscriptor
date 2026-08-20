@@ -1,6 +1,7 @@
 import * as Tone from "tone";
 import { WorkletSynthesizer } from "spessasynth_lib";
 import workletUrl from "spessasynth_lib/dist/spessasynth_processor.min.js?url";
+import { transcribeApi } from "./api";
 
 /**
  * Playback goes through spessasynth_lib, a full SoundFont synthesizer running
@@ -9,7 +10,7 @@ import workletUrl from "spessasynth_lib/dist/spessasynth_processor.min.js?url";
  * backend serves it at /soundfonts/ from a locally-cached download — see
  * muscriptor/soundfonts.py.
  */
-const SOUNDFONT_URL = "/soundfonts/MuseScore_General.sf3";
+const SOUNDFONT_URL = transcribeApi("/soundfonts/MuseScore_General.sf3");
 
 /** GM channel reserved for percussion. */
 const DRUM_CHANNEL = 9;

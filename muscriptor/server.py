@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Annotated, Callable
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
@@ -87,6 +88,20 @@ _MAX_TRANSCRIBE_MIDI_DURATION_S = 15 * 60
 SHEETS_ZIP_NAME = "sheets.zip"
 
 
+def _allowed_origins() -> list[str]:
+    """Browser origins allowed to call a standalone MuScriptor API.
+
+    The default remains same-origin only: without this environment variable no
+    CORS middleware is installed, preserving the bundled UI deployment.  A
+    standalone frontend can opt in with a comma-separated list of exact origins.
+    """
+    return [
+        origin.strip().rstrip("/")
+        for origin in os.environ.get("MUSCRIPTOR_ALLOWED_ORIGINS", "").split(",")
+        if origin.strip() and origin.strip() != "*"
+    ]
+
+
 def engrave_to_zip(midi_bytes: bytes, quantized: bool = False) -> bytes:
     """Engrave `midi_bytes` and pack everything written into one zip.
 
@@ -120,6 +135,14 @@ def event_to_dict(ev: NoteStartEvent | NoteEndEvent) -> dict:
 
 def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> FastAPI:
     app = FastAPI(title="muscriptor")
+    allowed_origins = _allowed_origins()
+    if allowed_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=allowed_origins,
+            allow_methods=["GET", "POST"],
+            allow_headers=["X-Client-Id"],
+        )
 
     transcribe_lock = threading.Lock()
     # State of the run currently holding the lock (or the last one to have held
