@@ -1,0 +1,68 @@
+name: Sync chord Space
+
+# Pushes the chord service to its Hugging Face Space, which builds the image
+# itself from what it receives. Manual like the demo deploy: the Space is a
+# separate public deployment, so it moves when someone decides it should, not
+# on every merge.
+
+on:
+  workflow_dispatch:
+    inputs:
+      space:
+        description: Space to push to, as owner/name
+        required: true
+        default: muscriptor/muscriptor-chords
+
+concurrency:
+  group: sync-hf-space
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Check the app parses
+      # The Space rebuilds its image from scratch on every push, so a syntax
+      # error here would otherwise surface ten minutes later as a failed build.
+      run: python -c "import ast, pathlib; ast.parse(pathlib.Path('deploy/huggingface/app.py').read_text())"
+    - name: Assemble the Space repository
+      env:
+        SPACE_DIR: ${{ runner.temp }}/space
+      run: |
+        set -euo pipefail
+        mkdir -p "$SPACE_DIR/deploy/huggingface"
+        # Hugging Face requires the Dockerfile and the README (whose YAML
+        # frontmatter configures the Space) at the repository root; everything
+        # else keeps the layout it has here, so that the same Dockerfile builds
+        # locally from the repo root and on the Space.
+        cp deploy/huggingface/README.md "$SPACE_DIR/README.md"
+        cp deploy/huggingface/Dockerfile "$SPACE_DIR/Dockerfile"
+        cp deploy/huggingface/.dockerignore "$SPACE_DIR/.dockerignore"
+        cp deploy/huggingface/app.py "$SPACE_DIR/deploy/huggingface/app.py"
+        # The package itself, plus what building a wheel from it needs. No web
+        # build, no tests, no soundfonts: the chord service imports
+        # `muscriptor.utils` and serves JSON.
+        cp pyproject.toml uv.lock LICENSE LICENSE-BTC "$SPACE_DIR/"
+        rsync -a --exclude '__pycache__' --exclude 'web_dist' muscriptor "$SPACE_DIR/"
+    - name: Push to the Space
+      env:
+        # A write token for the Space's owner, from
+        # https://huggingface.co/settings/tokens.
+        HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        SPACE: ${{ inputs.space }}
+        SPACE_DIR: ${{ runner.temp }}/space
+      run: |
+        set -euo pipefail
+        : "${HF_TOKEN:?Set the HF_TOKEN repository secret to a write token}"
+        cd "$SPACE_DIR"
+        git init -q -b main
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add -A
+        git commit -q -m "Sync from ${GITHUB_REPOSITORY}@${GITHUB_SHA}"
+        # Force, with a fresh history every time: this repository is the only
+        # source of truth for the Space's contents. Anything committed to the
+        # Space by hand is overwritten — configuration belongs in the Space's
+        # Settings (variables and secrets), which a push does not touch.
+        git push --force "https://github-actions:${HF_TOKEN}@huggingface.co/spaces/${SPACE}" main

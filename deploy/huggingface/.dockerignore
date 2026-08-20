@@ -1,0 +1,22 @@
+# Deployed to the Space repository root as `.dockerignore` by
+# .github/workflows/sync-hf-space.yml. Written as an allowlist rather than a
+# list of things to skip, because the Space repo is also a place people drop
+# files by hand through the HF web UI — an audio file uploaded there to try
+# something out must not end up baked into the next image.
+#
+# (A local `docker build -f deploy/huggingface/Dockerfile .` from a full
+# checkout uses the repository's own root .dockerignore instead of this one;
+# that file already keeps the weights, audio and node_modules out.)
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!muscriptor
+!deploy
+
+# Never ship a stale local build of the web UI or of anything else: the chord
+# service serves no static files at all.
+muscriptor/web_dist
+**/__pycache__
+**/*.pyc
