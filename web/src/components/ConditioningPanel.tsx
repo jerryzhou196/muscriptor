@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { Button } from "./Button";
 import { label, scoreInstrument } from "../instruments";
+import { transcribeApi } from "../api";
 
 /**
  * Conditioning instruments: optional pre-selection that overrides the model's
@@ -26,7 +27,7 @@ export function ConditioningPanel(props: {
     let cancelled = false;
     (async () => {
       try {
-        const resp = await fetch("/instruments");
+        const resp = await fetch(transcribeApi("/instruments"));
         if (!resp.ok) return;
         const data = (await resp.json()) as { instruments: string[] };
         if (!cancelled) setAvailable(data.instruments);
