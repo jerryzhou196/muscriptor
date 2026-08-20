@@ -8,7 +8,7 @@ import re
 import sys
 import time
 import warnings
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -51,6 +51,7 @@ from muscriptor.utils.beats import (
     TempoDetection,
     detect_grid,
 )
+from muscriptor.utils.chords import Chord, ChordDetectionError, detect_chords
 from muscriptor.utils.download import download_companion, download_if_necessary
 from muscriptor.utils.midi import notes_to_midi
 
@@ -630,9 +631,11 @@ class TranscriptionModel:
         beam_size: int = 1,
         prelude_forcing: bool = True,
         detect_tempo: TempoDetection = "best-effort",
+        recognize_chords: bool = True,
     ) -> bytes:
         """Same as :meth:`transcribe` but returns a MIDI file as bytes."""
         beat_grid = self.detect_beat_grid_for(audio, detect_tempo)
+        chords = self.recognize_chords_for(audio, beat_grid) if recognize_chords else []
         events = self.transcribe(
             audio,
             use_sampling=use_sampling,
@@ -644,7 +647,7 @@ class TranscriptionModel:
             beam_size=beam_size,
             prelude_forcing=prelude_forcing,
         )
-        return self.events_to_midi_bytes(events, beat_grid=beat_grid)
+        return self.events_to_midi_bytes(events, beat_grid=beat_grid, chords=chords)
 
     def detect_beat_grid_for(
         self,
@@ -675,15 +678,39 @@ class TranscriptionModel:
             )
             return None
 
+    def recognize_chords_for(
+        self,
+        audio: str | Path | tuple[torch.Tensor, int],
+        grid: BeatGrid | None = None,
+    ) -> list[Chord]:
+        """Recognize `audio`'s chords, snapped to `grid` when there is one.
+
+        Accepts the same input forms as :meth:`transcribe`. Never fatal: chord
+        recognition is an extra on top of the transcription, so a missing
+        dependency or an unreadable checkpoint costs the chord track and
+        nothing else.
+        """
+        tensor, sample_rate = audio if isinstance(audio, tuple) else (audio, None)
+        try:
+            wav = self._load_wav(tensor, sample_rate)
+            return detect_chords(wav, _SAMPLE_RATE, grid, device=self._device)
+        except ChordDetectionError as e:
+            print(f"Warning: {e}; continuing without chords", file=sys.stderr)
+            return []
+
     def events_to_midi_bytes(
         self,
         events: Iterator[NoteStartEvent | NoteEndEvent | ProgressEvent],
         beat_grid: BeatGrid | None = None,
+        chords: Sequence[Chord] | None = None,
     ) -> bytes:
         """Reassemble Notes from a NoteStart/NoteEnd stream and serialize MIDI.
 
         Shared by :meth:`transcribe_to_midi` and the HTTP server, so the MIDI
         bytes are identical regardless of how the events were obtained.
+
+        `chords` (from :meth:`recognize_chords_for`) are written along as
+        markers, moved onto the beat grid with the notes.
         """
         notes: list[Note] = []
         open_notes: dict[int, Note] = {}
@@ -716,7 +743,9 @@ class TranscriptionModel:
         # don't drift from earlier reference outputs.
         notes = validate_notes(notes, fix=True)
         notes = trim_overlapping_notes(notes, sort=True)
-        midi = notes_to_midi(notes, program_names=program_names, beat_grid=beat_grid)
+        midi = notes_to_midi(
+            notes, program_names=program_names, beat_grid=beat_grid, chords=chords
+        )
         buf = io.BytesIO()
         midi.save(file=buf)
         return buf.getvalue()

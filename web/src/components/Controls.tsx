@@ -12,12 +12,28 @@ export function Controls(props: {
   onMixChange: (v: number) => void;
   stereo: boolean;
   onStereoChange: (v: boolean) => void;
+  /** Whether the recognized chords are played along with the transcription. */
+  chords: boolean;
+  onChordsChange: (v: boolean) => void;
+  /** False when nothing was recognized, which greys the chord toggle out. */
+  hasChords: boolean;
   /** Whether the roll auto-follows the playhead (toggled off by manual scrolling). */
   following: boolean;
   onToggleFollow: () => void;
 }) {
-  const { audio, clockRef, mix, onMixChange, stereo, onStereoChange, following, onToggleFollow } =
-    props;
+  const {
+    audio,
+    clockRef,
+    mix,
+    onMixChange,
+    stereo,
+    onStereoChange,
+    chords,
+    onChordsChange,
+    hasChords,
+    following,
+    onToggleFollow,
+  } = props;
   // The transport's state isn't React state (and it can auto-stop at the end),
   // so poll it each frame to keep the toggle button's label in sync.
   const [playing, setPlaying] = useState(false);
@@ -118,6 +134,28 @@ export function Controls(props: {
           onClick={(e) => e.currentTarget.blur()}
         />
         <span>Stereo</span>
+      </label>
+      <label
+        className={clsx(
+          "inline-flex select-none items-center gap-1.5 text-sm text-muted pr-3",
+          hasChords ? "cursor-pointer" : "cursor-default opacity-40",
+        )}
+        title={
+          hasChords
+            ? "Comp the recognized chords along with the transcription"
+            : "No chords were recognized in this recording"
+        }
+      >
+        <input
+          className="cursor-pointer accent-accent"
+          type="checkbox"
+          checked={chords}
+          disabled={!hasChords}
+          onChange={(e) => onChordsChange(e.target.checked)}
+          // Same as the others: keep Space bound to play/pause after clicking.
+          onClick={(e) => e.currentTarget.blur()}
+        />
+        <span>Chords</span>
       </label>
     </div>
   );

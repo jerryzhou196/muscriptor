@@ -35,6 +35,22 @@ export interface BeatGrid {
   onset_delay: number;
 }
 
+/**
+ * One recognized chord, from `transcription_complete`'s `chords`. `time` is the
+ * change, in the same seconds the beat grid is drawn in — the chords were
+ * snapped to the beats, so unlike the notes they need no `onset_delay` shift.
+ * The chord runs until the next one (or the end of the audio).
+ */
+export interface ChordChange {
+  time: number;
+  label: string;
+}
+
+/** Height of the chord lane across the top of the note area, in px. */
+const CHORD_LANE_H = 22;
+/** Below this width (px) a chord's label is dropped rather than overlapping the next. */
+const MIN_CHORD_LABEL_PX = 26;
+
 /** Don't shade measures narrower than this (px) — double the shading step instead. */
 const MIN_BAR_PX = 40;
 
@@ -180,6 +196,10 @@ let rollPalette: {
   keyBlack: string;
   keyWhite: string;
   labelFont: string;
+  chordLane: string;
+  chordText: string;
+  chordTextNow: string;
+  chordFont: string;
 } | null = null;
 
 function palette() {
@@ -193,6 +213,10 @@ function palette() {
       keyBlack: v("--roll-key-black"),
       keyWhite: v("--roll-key-white"),
       labelFont: `10px ${v("--font-sans")}`,
+      chordLane: v("--roll-chord-lane"),
+      chordText: v("--roll-chord-text"),
+      chordTextNow: v("--roll-chord-text-now"),
+      chordFont: `600 12px ${v("--font-sans")}`,
     };
   }
   return rollPalette;
@@ -249,6 +273,8 @@ export class PianoRoll {
   private contentDuration = 0;
   /** Detected beat grid; null until the final `midi` event arrives (then: seconds grid). */
   private beatGrid: BeatGrid | null = null;
+  /** Recognized chord changes, in order; empty until the final event arrives. */
+  private chords: ChordChange[] = [];
 
   get pxPerSec(): number {
     return this._pxPerSec;
@@ -331,6 +357,14 @@ export class PianoRoll {
     this.latestNoteStart -= grid.onset_delay;
   }
 
+  /**
+   * Show the recognized chords in the lane above the notes. They are already on
+   * the beat grid, so unlike {@link setBeatGrid} this moves nothing.
+   */
+  setChords(chords: ChordChange[]) {
+    this.chords = [...chords].sort((a, b) => a.time - b.time);
+  }
+
   /** Tell the roll the loaded audio length, which bounds the time-axis scroll. */
   setDuration(seconds: number) {
     this.contentDuration = seconds;
@@ -379,6 +413,7 @@ export class PianoRoll {
     this.pitchTop = DEFAULT_PITCH_TOP;
     this.contentDuration = 0;
     this.beatGrid = null;
+    this.chords = [];
   }
 
   /**
@@ -711,6 +746,10 @@ export class PianoRoll {
     }
     ctx.globalAlpha = 1;
 
+    // Chord lane, over the notes so its labels stay readable, under the
+    // playhead so the playhead still marks where in the bar you are.
+    this.drawChords(ctx, W, offsetSec, viewSec, pxPerSec);
+
     // Playhead
     const px = KEY_WIDTH + (this.playhead - offsetSec) * pxPerSec;
     ctx.strokeStyle = palette().playhead;
@@ -723,6 +762,70 @@ export class PianoRoll {
     ctx.restore();
 
     this.drawKeyboard(ctx, H, rowH, pitchTop);
+  }
+
+  /**
+   * Draw the chord lane: a band across the top of the note area carrying the
+   * recognized chord symbols, divided where the harmony changes.
+   *
+   * The chord playing right now is drawn brighter, and its label sticks to the
+   * left edge while the chord scrolls past — so the symbol under the playhead
+   * stays readable through a long chord instead of sliding off the screen.
+   */
+  private drawChords(
+    ctx: CanvasRenderingContext2D,
+    W: number,
+    offsetSec: number,
+    viewSec: number,
+    pxPerSec: number,
+  ) {
+    if (this.chords.length === 0) return;
+    const p = palette();
+    const viewEnd = offsetSec + viewSec;
+
+    ctx.save();
+    ctx.globalAlpha = 0.92;
+    ctx.fillStyle = p.chordLane;
+    ctx.fillRect(KEY_WIDTH, 0, W - KEY_WIDTH, CHORD_LANE_H);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = p.grid;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(KEY_WIDTH, CHORD_LANE_H + 0.5);
+    ctx.lineTo(W, CHORD_LANE_H + 0.5);
+    ctx.stroke();
+
+    ctx.font = p.chordFont;
+    ctx.textBaseline = "middle";
+    for (let i = 0; i < this.chords.length; i++) {
+      const { time, label } = this.chords[i];
+      // A chord runs until the next one; the last runs to the end of the audio.
+      const next = this.chords[i + 1];
+      const until = next ? next.time : Math.max(this.contentDuration, time);
+      if (until < offsetSec || time > viewEnd) continue;
+      const x0 = KEY_WIDTH + (time - offsetSec) * pxPerSec;
+      const x1 = KEY_WIDTH + (until - offsetSec) * pxPerSec;
+
+      if (x0 > KEY_WIDTH) {
+        ctx.beginPath();
+        ctx.moveTo(x0 + 0.5, 0);
+        ctx.lineTo(x0 + 0.5, CHORD_LANE_H);
+        ctx.stroke();
+      }
+      // Too narrow to hold a symbol: the divider alone shows the change.
+      if (x1 - x0 < MIN_CHORD_LABEL_PX) continue;
+
+      const playing = this.playhead >= time && this.playhead < until;
+      ctx.save();
+      // Clipped to its own span, so a long symbol can't run into the next one.
+      ctx.beginPath();
+      ctx.rect(Math.max(x0, KEY_WIDTH), 0, x1 - Math.max(x0, KEY_WIDTH), CHORD_LANE_H);
+      ctx.clip();
+      ctx.fillStyle = playing ? p.chordTextNow : p.chordText;
+      ctx.fillText(label, Math.max(x0, KEY_WIDTH) + 5, CHORD_LANE_H / 2);
+      ctx.restore();
+    }
+    ctx.restore();
   }
 
   /** Draw the piano-key strip down the left edge, aligned to the pitch axis. */

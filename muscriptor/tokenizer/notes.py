@@ -5,11 +5,13 @@ Adapted from YourMT3+ (https://github.com/mimbres/YourMT3).
 
 import os
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from mido import Message, MetaMessage, MidiFile, MidiTrack, second2tick
 
 from muscriptor.utils.beats import BAR_OFFSET_MARKER
+from muscriptor.utils.chords import CHORD_MARKER
 
 DRUM_PROGRAM = 128
 MINIMUM_NOTE_DURATION_SEC = 0.01
@@ -267,6 +269,7 @@ def note_event2midi(
     program_names: dict[int, str] | None = None,
     beats_per_bar: int | None = None,
     offset_s: float = 0.0,
+    chord_markers: Sequence[tuple[float, str]] | None = None,
 ) -> MidiFile:
     """Convert NoteEvent list to a type-1 (multi-track) MIDI file.
 
@@ -281,6 +284,8 @@ def note_event2midi(
 
     `beats_per_bar` writes a time signature (denominator 4).
     `offset_s` delays every event so bar lines land on real downbeats.
+    `chord_markers` is `(time in seconds, chord symbol)` for the recognized
+    chord changes, written as markers on the meta track (see CHORD_MARKER).
     """
     midi = MidiFile(ticks_per_beat=ticks_per_beat, type=1)
     meta_track = MidiTrack()
@@ -297,6 +302,19 @@ def note_event2midi(
         meta_track.append(
             MetaMessage("marker", text=f"{BAR_OFFSET_MARKER}{offset_s:.4f}", time=0)
         )
+    # The chord track. Markers carry it through every consumer that matters —
+    # `--format sheets` engraves them over the staff, the web player shows the
+    # chord under the playhead, and a DAW lists them alongside the notes —
+    # without a second file to keep in sync with the MIDI.
+    marker_tick = 0
+    for seconds, symbol in sorted(chord_markers or (), key=lambda m: m[0]):
+        tick = max(0, round(second2tick(seconds + offset_s, ticks_per_beat, tempo)))
+        meta_track.append(
+            MetaMessage(
+                "marker", text=f"{CHORD_MARKER}{symbol}", time=tick - marker_tick
+            )
+        )
+        marker_tick = tick
     midi.tracks.append(meta_track)
 
     drum_offset_events = []

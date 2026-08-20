@@ -6,6 +6,7 @@ from mido import MidiFile
 
 from muscriptor.tokenizer.notes import Note
 from muscriptor.utils.beats import BAR_OFFSET_MARKER, BeatGrid, read_bar_offset
+from muscriptor.utils.chords import CHORD_MARKER, Chord
 from muscriptor.utils.midi import notes_to_midi
 
 
@@ -172,3 +173,63 @@ def test_bar_offset_marker_is_machine_readable():
     text = _metas(midi, "marker")[0].text
     assert text.startswith(BAR_OFFSET_MARKER)
     assert read_bar_offset(midi) > 0
+
+
+# --- the chord track --------------------------------------------------------
+
+
+def _chord_ticks(midi):
+    """`(absolute tick, symbol)` for every chord marker in `midi`."""
+    found = []
+    for track in midi.tracks:
+        tick = 0
+        for msg in track:
+            tick += msg.time
+            if msg.type == "marker" and msg.text.startswith(CHORD_MARKER):
+                found.append((tick, msg.text.removeprefix(CHORD_MARKER)))
+    return found
+
+
+def test_chords_are_written_as_markers():
+    chords = [
+        Chord(start=0.0, end=1.0, root=0, quality="maj"),
+        Chord(start=1.0, end=2.0, root=9, quality="min7"),
+    ]
+    grid = BeatGrid(bpm=120, beats_per_bar=None, first_downbeat=0.0, onset_delay=0.0)
+    midi = notes_to_midi(_sample_notes(), beat_grid=grid, chords=chords)
+    # 120 BPM, 480 ticks per beat: one second is two beats.
+    assert _chord_ticks(midi) == [(0, "C"), (960, "Am7")]
+
+
+def test_no_chords_writes_no_markers():
+    assert _chord_ticks(notes_to_midi(_sample_notes())) == []
+
+
+def test_chords_move_onto_the_beat_grid_with_the_notes():
+    """A chord written over a note has to land on that note's tick, not near it.
+
+    The notes are pulled back by `onset_delay` and pushed forward by the bar
+    offset; a chord that missed either shift would sit a fraction of a beat off
+    the harmony it names.
+    """
+    onset = 4.0
+    notes = [Note(is_drum=False, program=0, onset=onset, offset=onset + 0.5, pitch=60)]
+    grid = BeatGrid(
+        bpm=120,
+        beats_per_bar=4,
+        first_downbeat=0.3,
+        beats=0.3 + np.arange(32) * 0.5,
+        onset_delay=0.02,
+    )
+    chords = [Chord(start=onset, end=onset + 1.0, root=7, quality="maj")]
+    midi = notes_to_midi(notes, beat_grid=grid, chords=chords)
+
+    note_on = next(
+        (tick, m)
+        for track in midi.tracks
+        for tick, m in [
+            (sum(x.time for x in track[: i + 1]), track[i]) for i in range(len(track))
+        ]
+        if m.type == "note_on" and m.velocity > 0
+    )
+    assert _chord_ticks(midi) == [(note_on[0], "G")]

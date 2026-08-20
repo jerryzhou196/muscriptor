@@ -84,6 +84,9 @@ export function App() {
   const [currentFile, setCurrentFile] = useState<File | null>(null);
   const [mix, setMix] = useState(0.75);
   const [stereo, setStereo] = useState(false);
+  // The chord track is opt-in, and only offered once chords come back.
+  const [chordsOn, setChordsOn] = useState(false);
+  const [chordCount, setChordCount] = useState(0);
   const [userScrolled, setUserScrolled] = useState(false);
   const [condSelected, setCondSelected] = useState<Set<string>>(() => new Set());
   // True while a file is being dragged over the window. On the welcome screen
@@ -124,6 +127,7 @@ export function App() {
     setMidiBlob,
     setCurrentFile,
     setUserScrolled,
+    setChordCount,
     midiFilenameRef,
   });
   // Submit the file picked on the welcome screen. The view only switches once
@@ -428,6 +432,12 @@ export function App() {
             onStereoChange={(v) => {
               setStereo(v);
               audio.setStereo(v);
+            }}
+            chords={chordsOn}
+            hasChords={chordCount > 0}
+            onChordsChange={(v) => {
+              setChordsOn(v);
+              audio.setChordsEnabled(v);
             }}
             following={!userScrolled}
             onToggleFollow={() => {
