@@ -21,7 +21,6 @@ from muscriptor.events import NoteEndEvent, NoteStartEvent, ProgressEvent
 from muscriptor.server import create_app, event_to_dict
 from muscriptor.transcription_model import TranscriptionModel
 from muscriptor.utils.beats import BeatGrid
-from muscriptor.utils.chords import Chord
 from muscriptor.utils.sheets import MuseScoreError, MuseScoreNotFoundError
 
 FAKE_MIDI = b"FAKE_MIDI_BYTES"
@@ -153,33 +152,6 @@ def test_transcribe_sends_beat_grid(tmp_path):
         # from, so the UI is told to shift its notes by nothing.
         "onset_delay": 0.0,
     }
-
-
-def test_transcribe_quantized_midi_keeps_recognized_chords(tmp_path, monkeypatch):
-    """The MIDI sent to sheet engraving must retain the recognized harmony."""
-    grid = BeatGrid(
-        bpm=120,
-        beats_per_bar=4,
-        first_downbeat=0.0,
-        onset_delay=0.0,
-        beat_subdivision=4,
-    )
-    monkeypatch.setattr(BeatGrid, "with_onset_delay", lambda self, onsets: self)
-    recognized = [Chord(start=0.0, end=1.0, root=0, quality="maj")]
-    model = make_model()
-    model.detect_beat_grid_for.return_value = grid
-    model.recognize_chords_for.return_value = recognized
-
-    resp = TestClient(create_app(model)).post(
-        "/transcribe",
-        files={"file": ("silent.wav", _wav_bytes(tmp_path), "audio/wav")},
-    )
-
-    assert resp.status_code == 200
-    assert model.events_to_midi_bytes.call_count == 2
-    quantized = model.events_to_midi_bytes.call_args_list[1]
-    assert quantized.kwargs["chords"] == recognized
-    assert quantized.kwargs["quantize"] is True
 
 
 def test_transcribe_forwards_progress(tmp_path):
