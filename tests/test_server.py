@@ -142,8 +142,9 @@ def test_transcribe_streams_sse_events(tmp_path):
     assert resp.headers["content-type"].startswith("text/event-stream")
 
     parsed = _parse_sse(resp.text)
-    # Note events, then a trailing base64-encoded MIDI event.
-    assert parsed[:-1] == [event_to_dict(e) for e in events]
+    # Start marker, note events, then a trailing base64-encoded MIDI event.
+    assert parsed[0] == {"type": "transcription_started"}
+    assert parsed[1:-1] == [event_to_dict(e) for e in events]
     assert parsed[-1] == {
         "type": "transcription_complete",
         "data": base64.b64encode(FAKE_MIDI).decode("ascii"),
@@ -218,13 +219,14 @@ def test_transcribe_empty_stream(tmp_path):
     assert resp.status_code == 200
     # No notes, but the trailing MIDI event is still emitted.
     assert _parse_sse(resp.text) == [
+        {"type": "transcription_started"},
         {
             "type": "transcription_complete",
             "data": base64.b64encode(FAKE_MIDI).decode("ascii"),
             "quantized_midi": None,
             "beat_grid": None,
             "chords": [],
-        }
+        },
     ]
 
 
@@ -402,7 +404,7 @@ def _blocking_transcribe_model(first_reached: threading.Event, gate: threading.E
 
 def _post_transcribe(app, payload, client_id, out, name):
     # A fresh TestClient per thread (httpx.Client isn't for concurrent use); the
-    # underlying app — and its lock — is shared, which is what we're exercising.
+    # underlying app — and its queue — is shared, which is what we're exercising.
     client = TestClient(app)
     resp = client.post(
         "/transcribe",
@@ -412,15 +414,68 @@ def _post_transcribe(app, payload, client_id, out, name):
     out[name] = _parse_sse(resp.text)
 
 
-def test_concurrent_different_clients_do_not_preempt(tmp_path):
-    """The reported bug: a second window (different client id) must NOT stop the
-    transcription already in progress. It also must not wait around for the
-    lock: it gets an immediate 503 (so a caller retrying against another
-    machine, e.g. behind Traefik, doesn't sit on the connection)."""
+def _wait_for_queue_depth(app, expected):
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if app.state.transcription_queue.waiting_count == expected:
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"queue never reached {expected} waiting request(s)")
+
+
+def test_transcription_queue_is_fifo():
+    queue = server_module._TranscriptionQueue(heartbeat_s=0.01)
+    first = queue.submit("tab-A", cancellable=True)
+    second = queue.submit("tab-B", cancellable=True)
+    third = queue.submit("tab-C", cancellable=True)
+
+    assert queue.wait_for_update(first, None) == ("active", 0)
+    assert queue.wait_for_update(second, None) == ("queued", 1)
+    assert queue.wait_for_update(third, None) == ("queued", 2)
+
+    queue.finish(first)
+    # StreamingResponse also calls finish in its background cleanup; a second
+    # cleanup must not disturb the ticket that was just promoted.
+    queue.finish(first)
+    assert queue.wait_for_update(second, 1) == ("active", 0)
+    assert queue.wait_for_update(third, 2) == ("queued", 1)
+
+    queue.finish(second)
+    assert queue.wait_for_update(third, 1) == ("active", 0)
+    queue.finish(third)
+
+
+def test_transcription_queue_removes_cancelled_waiter():
+    queue = server_module._TranscriptionQueue()
+    first = queue.submit("tab-A", cancellable=True)
+    cancelled = queue.submit("tab-B", cancellable=True)
+    next_up = queue.submit("tab-C", cancellable=True)
+
+    queue.cancel(cancelled)
+    assert queue.wait_for_update(cancelled, 1) == ("cancelled", None)
+    assert queue.wait_for_update(next_up, 2) == ("queued", 1)
+
+    queue.finish(first)
+    assert queue.wait_for_update(next_up, 1) == ("active", 0)
+    queue.finish(next_up)
+
+
+def test_concurrent_different_clients_are_queued(tmp_path):
+    """A second browser waits in line without stopping the active request."""
     first_reached = threading.Event()
     gate = threading.Event()
     model, s0 = _blocking_transcribe_model(first_reached, gate)
     app = create_app(model)
+    queued_update = threading.Event()
+    original_wait_for_update = app.state.transcription_queue.wait_for_update
+
+    def record_queue_update(*args):
+        update = original_wait_for_update(*args)
+        if update[0] == "queued":
+            queued_update.set()
+        return update
+
+    app.state.transcription_queue.wait_for_update = record_queue_update
     payload = _wav_bytes(tmp_path)
     out: dict[str, list] = {}
 
@@ -430,22 +485,26 @@ def test_concurrent_different_clients_do_not_preempt(tmp_path):
     a.start()
     assert first_reached.wait(timeout=5)  # A holds the lock, mid-stream
 
-    # B, a different client, is refused immediately rather than queued.
-    client_b = TestClient(app)
-    started = time.monotonic()
-    resp_b = client_b.post(
-        "/transcribe",
-        files={"file": ("silent.wav", payload, "audio/wav")},
-        headers={"X-Client-Id": "tab-B"},
+    b = threading.Thread(
+        target=_post_transcribe, args=(app, payload, "tab-B", out, "B")
     )
-    assert time.monotonic() - started < 2.0  # no ~60s (or even multi-second) wait
-    assert resp_b.status_code == 503
+    b.start()
+    _wait_for_queue_depth(app, 1)
+    assert b.is_alive()
+    assert model.transcribe.call_count == 1
+    assert queued_update.wait(timeout=5)
 
     gate.set()
     a.join(timeout=10)
+    b.join(timeout=10)
+    assert not a.is_alive()
+    assert not b.is_alive()
 
     # A ran to completion (ends with the assembled MIDI event) — not preempted.
-    assert out["A"][0] == event_to_dict(s0)
+    assert out["A"][:2] == [
+        {"type": "transcription_started"},
+        event_to_dict(s0),
+    ]
     assert out["A"][-1] == {
         "type": "transcription_complete",
         "data": base64.b64encode(FAKE_MIDI).decode("ascii"),
@@ -455,14 +514,9 @@ def test_concurrent_different_clients_do_not_preempt(tmp_path):
         "chords": [],
     }
 
-    # Once A has released the lock, B's retry (as the frontend would send)
-    # succeeds normally.
-    resp_b_retry = client_b.post(
-        "/transcribe",
-        files={"file": ("silent.wav", payload, "audio/wav")},
-        headers={"X-Client-Id": "tab-B"},
-    )
-    assert _parse_sse(resp_b_retry.text)[-1]["type"] == "transcription_complete"
+    assert out["B"][0] == {"type": "queued", "position": 1}
+    assert {"type": "transcription_started"} in out["B"]
+    assert out["B"][-1]["type"] == "transcription_complete"
     assert model.transcribe.call_count == 2
 
 
@@ -486,15 +540,17 @@ def test_concurrent_same_client_preempts(tmp_path):
         target=_post_transcribe, args=(app, payload, "same-tab", out, "B")
     )
     b.start()
-    # Let B reach the lock and signal A's cancel (same id → preempt) before A
-    # resumes past the gate.
-    time.sleep(0.5)
+    # Let B enter the queue and signal A's cancellation before A resumes.
+    _wait_for_queue_depth(app, 1)
     gate.set()
     a.join(timeout=10)
     b.join(timeout=10)
 
     # A was preempted: it streamed its first note but never the trailing MIDI.
-    assert out["A"] == [event_to_dict(s0)]
+    assert out["A"] == [
+        {"type": "transcription_started"},
+        event_to_dict(s0),
+    ]
     # B (the resubmit) ran to completion.
     assert out["B"][-1]["type"] == "transcription_complete"
     assert model.transcribe.call_count == 2

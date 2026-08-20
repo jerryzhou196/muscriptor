@@ -4,8 +4,9 @@ How a hosted muscriptor is put together: what runs where, why it is split that
 way, and what an operator has to set to stand it up.
 
 The repository still ships the single-box deployment it always had — one
-container serving the API and the built frontend from the same origin, behind
-Traefik on a Docker Swarm host (`Dockerfile`, `swarm.yml`, `deploy.sh`,
+container serving the API and the built frontend from the same origin, either
+through `docker-compose.yml` on a single Docker host or behind Traefik on a
+Docker Swarm host (`Dockerfile`, `swarm.yml`, `deploy.sh`,
 `.github/workflows/deploy.yml`). Nothing here replaces it. This document
 describes the *split* deployment, which exists because the two models in this
 project have very different appetites.

@@ -3,8 +3,10 @@
 POST /transcribe with an audio file (multipart/form-data field `file`; WAV,
 or any format soundfile/libsndfile can read — mp3, flac, ogg, m4a, …) returns
 `text/event-stream`. Each event's data is a JSON dict tagged by `type`:
-`start` / `end` note events (same shape as `muscriptor.main._event_to_dict`),
-`progress` chunk anchors (`{completed, total}`), and a final
+`queued` position updates while other requests are ahead,
+`transcription_started` when this request reaches the front, `start` / `end`
+note events (same shape as `muscriptor.main._event_to_dict`), `progress` chunk
+anchors (`{completed, total}`), and a final
 `transcription_complete` event carrying the base64-encoded .mid file (`data`)
 plus the detected `beat_grid`
 (`{bpm, beats_per_bar, first_downbeat, onset_delay}`, or null if no tempo was
@@ -39,7 +41,7 @@ import time
 import wave
 import zipfile
 from pathlib import Path
-from typing import Annotated, Callable
+from typing import Annotated
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -62,25 +64,128 @@ from muscriptor.utils.sheets import (
 )
 
 
-def _make_release_once(lock: threading.Lock):
-    """Return a callable that releases `lock` at most once.
+@dataclasses.dataclass(eq=False)
+class _TranscriptionTicket:
+    client_id: str | None
+    cancellable: bool
+    cancel: threading.Event = dataclasses.field(default_factory=threading.Event)
 
-    Safe to call from multiple cleanup paths (generator finally + response
-    background task), possibly from different threads, without risking a
-    double-release RuntimeError.
+
+class _TranscriptionQueue:
+    """A process-local FIFO for the one model loaded by ``muscriptor serve``.
+
+    Streaming requests get position updates while waiting. A newer request from
+    the same browser tab cancels the tab's active/queued request, but it joins
+    the back of the line so repeated submissions cannot jump other users.
     """
-    guard = threading.Lock()
-    released = False
 
-    def release():
-        nonlocal released
-        with guard:
-            if released:
+    def __init__(self, heartbeat_s: float = 15.0):
+        self._condition = threading.Condition()
+        self._active: _TranscriptionTicket | None = None
+        self._waiting: list[_TranscriptionTicket] = []
+        self._heartbeat_s = heartbeat_s
+
+    @property
+    def waiting_count(self) -> int:
+        with self._condition:
+            return len(self._waiting)
+
+    def submit(
+        self, client_id: str | None, *, cancellable: bool
+    ) -> _TranscriptionTicket:
+        ticket = _TranscriptionTicket(client_id, cancellable)
+        with self._condition:
+            if client_id is not None:
+                if (
+                    self._active is not None
+                    and self._active.client_id == client_id
+                    and self._active.cancellable
+                ):
+                    self._active.cancel.set()
+
+                kept: list[_TranscriptionTicket] = []
+                for waiting in self._waiting:
+                    if waiting.client_id == client_id:
+                        waiting.cancel.set()
+                    else:
+                        kept.append(waiting)
+                self._waiting = kept
+
+            if self._active is None:
+                self._active = ticket
+            else:
+                self._waiting.append(ticket)
+            self._condition.notify_all()
+        return ticket
+
+    def wait_for_update(
+        self, ticket: _TranscriptionTicket, last_position: int | None
+    ) -> tuple[str, int | None]:
+        """Block until a ticket starts, is cancelled, or needs an SSE update."""
+        deadline = time.monotonic() + self._heartbeat_s
+        with self._condition:
+            while True:
+                if ticket.cancel.is_set():
+                    return "cancelled", None
+                if self._active is ticket:
+                    return "active", 0
+                try:
+                    # The active transcription plus earlier waiters are ahead.
+                    position = self._waiting.index(ticket) + 1
+                except ValueError:
+                    return "cancelled", None
+                if position != last_position:
+                    return "queued", position
+
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    # Re-send the current position as an SSE heartbeat so long
+                    # waits stay alive through reverse proxies.
+                    return "queued", position
+                self._condition.wait(remaining)
+
+    def wait_until_active(self, ticket: _TranscriptionTicket) -> bool:
+        """Wait for a non-streaming request's turn."""
+        with self._condition:
+            while True:
+                if ticket.cancel.is_set():
+                    return False
+                if self._active is ticket:
+                    return True
+                if ticket not in self._waiting:
+                    return False
+                self._condition.wait()
+
+    def cancel(self, ticket: _TranscriptionTicket) -> None:
+        """Cancel a queued ticket, or signal a cancellable active one."""
+        with self._condition:
+            if self._active is ticket:
+                if ticket.cancellable:
+                    ticket.cancel.set()
+            elif ticket in self._waiting:
+                self._waiting.remove(ticket)
+                ticket.cancel.set()
+            else:
                 return
-            released = True
-        lock.release()
+            self._condition.notify_all()
 
-    return release
+    def finish(self, ticket: _TranscriptionTicket) -> None:
+        """Remove a ticket and promote the oldest live waiter."""
+        with self._condition:
+            if self._active is ticket:
+                self._active = None
+            elif ticket in self._waiting:
+                self._waiting.remove(ticket)
+                ticket.cancel.set()
+            else:
+                return
+
+            while self._waiting:
+                candidate = self._waiting.pop(0)
+                if not candidate.cancel.is_set():
+                    self._active = candidate
+                    break
+            self._condition.notify_all()
 
 
 _MAX_TRANSCRIBE_MIDI_DURATION_S = 15 * 60
@@ -144,86 +249,8 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
             allow_headers=["X-Client-Id"],
         )
 
-    transcribe_lock = threading.Lock()
-    # State of the run currently holding the lock (or the last one to have held
-    # it), guarded by `cancel_guard`: its cancel event and the id of the client
-    # that started it. A new /transcribe from the SAME client (a resubmit in
-    # the same browser tab) sets the cancel event so the in-flight run stops at
-    # its next event boundary instead of transcribing to completion for a client
-    # that has moved on. A request from a DIFFERENT client never preempts — it
-    # waits for the lock like any other contender, so two independent browser
-    # windows don't kill each other's transcription. This scoping must be done
-    # here rather than by watching the socket: browser aborts don't always reach
-    # us (e.g. port forwards / proxies keep the upstream connection open after
-    # the browser aborts), so a same-tab resubmit can't be detected as a
-    # disconnect.
-    cancel_guard = threading.Lock()
-    current_cancel: threading.Event | None = None
-    current_client: str | None = None
-    # Bound on how long a same-client resubmit waits for the run it just
-    # cancelled to unwind and release the lock. That run stops within one
-    # chunk boundary, so this only needs to cover that latency — unlike
-    # genuine cross-client contention, which now fails instantly instead of
-    # sitting on the connection (see below).
-    preempt_wait_s = 5.0
-
-    async def acquire_transcribe_lock(
-        client_id: str | None, cancellable: bool
-    ) -> tuple[threading.Event | None, Callable[[], None]]:
-        """Acquire the single-transcription lock, preempting only a run started
-        by this same `client_id` (a resubmit): that run is signalled to stop
-        and this call waits up to `preempt_wait_s` for it to release the lock.
-        A different client — or an anonymous API caller with no id — never
-        preempts and is never preempted; it gets an immediate 503 instead of
-        waiting, so a caller retrying against another machine (e.g. behind a
-        load balancer like Traefik) doesn't have to hold the connection open.
-
-        Returns `(cancel, release)`: `cancel` is the new run's cancel event
-        (`None` when `cancellable` is False, e.g. the blocking /transcribe/midi
-        render, which can't be stopped mid-flight); `release` frees the lock at
-        most once, from whichever cleanup path runs first.
-        """
-        nonlocal current_cancel, current_client
-        deadline: float | None = None
-        while True:
-            with cancel_guard:
-                # Re-check each iteration so that even a same-client run which
-                # became "current" while we were already waiting (a resubmit
-                # that beat us to the lock) gets cancelled too — the newest
-                # request from a given client always wins.
-                preempting = (
-                    current_cancel is not None
-                    and client_id is not None
-                    and current_client == client_id
-                )
-                if preempting:
-                    current_cancel.set()
-            if not preempting:
-                acquired = await asyncio.to_thread(transcribe_lock.acquire, False)
-                if not acquired:
-                    raise HTTPException(
-                        status_code=503,
-                        detail="server busy: another transcription is in progress",
-                    )
-                break
-            if deadline is None:
-                deadline = time.monotonic() + preempt_wait_s
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise HTTPException(
-                    status_code=503,
-                    detail="server busy: another transcription is in progress",
-                )
-            acquired = await asyncio.to_thread(
-                transcribe_lock.acquire, True, min(0.1, remaining)
-            )
-            if acquired:
-                break
-        cancel = threading.Event() if cancellable else None
-        with cancel_guard:
-            current_cancel = cancel
-            current_client = client_id
-        return cancel, _make_release_once(transcribe_lock)
+    transcription_queue = _TranscriptionQueue()
+    app.state.transcription_queue = transcription_queue
 
     @app.get("/health")
     async def health():
@@ -279,19 +306,25 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
                 detail=f"unknown instrument name(s): {', '.join(unknown)}",
             )
 
-        # Acquire the single-transcription lock, preempting only a resubmit from
-        # this same client (see acquire_transcribe_lock). `release_lock` runs
-        # from whichever cleanup path fires first: the generator's finally
-        # (normal completion, errors, mid-stream disconnects) or the
-        # StreamingResponse background task (client disconnects before the
-        # generator is ever iterated, so its finally would never run) — either
-        # way the lock is released exactly once and never leaked.
-        cancel, release_lock = await acquire_transcribe_lock(
-            x_client_id, cancellable=True
-        )
+        ticket = transcription_queue.submit(x_client_id, cancellable=True)
 
         def gen():
             try:
+                last_position: int | None = None
+                while True:
+                    state, position = transcription_queue.wait_for_update(
+                        ticket, last_position
+                    )
+                    if state == "cancelled":
+                        return
+                    if state == "active":
+                        break
+                    last_position = position
+                    yield f"data: {json.dumps({'type': 'queued', 'position': position})}\n\n"
+
+                # The frontend stays on the upload screen through queue updates
+                # and moves to the transcription view only after this event.
+                yield 'data: {"type": "transcription_started"}\n\n'
                 events: list[NoteStartEvent | NoteEndEvent] = []
                 # batch_size=1 so each chunk's notes stream out as soon as it is
                 # generated, instead of waiting for a whole batch of chunks.
@@ -303,10 +336,9 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
                     batch_size=1,
                     no_eos_is_ok=True,
                 ):
-                    # A newer request preempted this run — stop generating
-                    # (closing the model.transcribe generator) and release the
-                    # lock via the finally, at most one chunk after the signal.
-                    if cancel.is_set():
+                    # A newer request superseded this run — stop generating and
+                    # release its queue slot, at most one chunk after the signal.
+                    if ticket.cancel.is_set():
                         return
                     if isinstance(ev, ProgressEvent):
                         # Coarse chunk-completion anchor — forward it but keep it
@@ -326,7 +358,7 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
                 # All notes streamed — build the MIDI file in memory (reusing the
                 # exact `muscriptor transcribe` logic) and send it as a final event
                 # with the bytes base64-encoded.
-                if cancel.is_set():
+                if ticket.cancel.is_set():
                     return
                 # Detect tempo/meter only now: it costs a few seconds of CPU and
                 # nothing before this point needs it, so the notes stream first.
@@ -412,12 +444,14 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
                 )
                 yield f"data: {payload}\n\n"
             finally:
-                release_lock()
+                transcription_queue.finish(ticket)
 
         return StreamingResponse(
             gen(),
             media_type="text/event-stream",
-            background=BackgroundTask(release_lock),
+            # `finish` is idempotent with the generator's finally and also
+            # removes a ticket if the client disconnects before first iteration.
+            background=BackgroundTask(transcription_queue.finish, ticket),
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
@@ -466,29 +500,38 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
                 detail=f"unknown instrument name(s): {', '.join(unknown)}",
             )
 
-        # Same mutual exclusion as /transcribe, via the shared helper. This run
-        # is not cancellable (it doesn't stream, so there's nothing to stop
-        # mid-flight); cancellable=False records that, so nothing tries to
-        # preempt a blocking MIDI render. A non-browser API caller sends no
-        # client id and so neither preempts nor is preempted — it just waits for
-        # the lock like any other contender.
-        _cancel, release_lock = await acquire_transcribe_lock(
-            x_client_id, cancellable=False
-        )
+        # This blocking endpoint shares the same FIFO as the SSE endpoint. Once
+        # it starts it is not cancellable mid-model-call, so another request can
+        # never promote early and run on the GPU at the same time.
+        ticket = transcription_queue.submit(x_client_id, cancellable=False)
         try:
-            midi_bytes, _ = await asyncio.to_thread(
-                model.transcribe_and_postprocess,
-                (wav, sr),
-                instruments=instruments or None,
-                detect_tempo=detect_tempo,
-                recognize_chords=chords,
+            if not await asyncio.to_thread(
+                transcription_queue.wait_until_active, ticket
+            ):
+                raise HTTPException(status_code=409, detail="request was superseded")
+
+            work = asyncio.create_task(
+                asyncio.to_thread(
+                    model.transcribe_and_postprocess,
+                    (wav, sr),
+                    instruments=instruments or None,
+                    detect_tempo=detect_tempo,
+                    recognize_chords=chords,
+                )
             )
+            try:
+                midi_bytes, _ = await asyncio.shield(work)
+            except asyncio.CancelledError:
+                # The thread cannot be interrupted safely. Keep this queue slot
+                # until it exits so the next ticket never overlaps it on the GPU.
+                await work
+                raise
         except BeatDetectionError as e:
             # Only reachable with detect_tempo=true, where the caller wants an error
             # if tempo detection fails.
             raise HTTPException(status_code=422, detail=str(e)) from e
         finally:
-            release_lock()
+            transcription_queue.finish(ticket)
 
         return Response(
             content=midi_bytes,

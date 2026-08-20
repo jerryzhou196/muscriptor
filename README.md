@@ -72,6 +72,27 @@ This gives you the same UI as hosted on https://muscriptor.kyutai.org/, just wit
 The sheet music download needs **MuseScore 4 or newer** installed separately (see
 [Sheet music](#sheet-music) below). Without it, everything except that download still works.
 
+### Docker Compose
+
+On a Docker host with the NVIDIA Container Toolkit, run the GPU service with:
+
+```bash
+export HF_TOKEN=hf_...
+docker compose up --build -d
+curl http://127.0.0.1:18000/health
+```
+
+`docker-compose.yml` keeps the Hugging Face cache in a volume and reserves one
+GPU. Set `MUSCRIPTOR_ALLOWED_ORIGINS` for a standalone browser frontend; the
+model, dtype, device, and loopback port can be overridden with
+`MUSCRIPTOR_MODEL`, `MUSCRIPTOR_DTYPE`, `MUSCRIPTOR_DEVICE`, and
+`MUSCRIPTOR_PORT`.
+
+The service deliberately runs one application replica. `/transcribe` and
+`/transcribe/midi` share a FIFO so only one request uses the loaded model at a
+time; streaming clients receive updated queue positions and may cancel without
+affecting other users.
+
 ## Command-line interface (CLI)
 
 ```bash

@@ -65,8 +65,8 @@ export type TranscriptionResult = {
 
 /** Stable id for this browser tab, sent as `X-Client-Id` on every transcribe
  *  request. Generated once per JS realm, so it's shared across resubmits within
- *  a tab (which the server preempts) but distinct between tabs (which the server
- *  serializes instead of cancelling). */
+ *  a tab (so a resubmit supersedes its older request) but distinct between tabs
+ *  (which the server keeps in FIFO order). */
 const CLIENT_ID =
   typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
@@ -90,9 +90,10 @@ export interface TranscriptionDeps {
   /** Called when a (non-superseded) transcription fails, so the UI can recover.
    *  `message` is a user-facing explanation (server-sent when available). */
   onError: (message: string) => void;
-  /** Called once the server has accepted the upload and the event stream is
-   *  opening — the cue to leave the welcome screen for the piano roll. */
+  /** Called when this request reaches the front of the server queue. */
   onAccepted: () => void;
+  /** Called whenever the server reports how many requests remain ahead. */
+  onQueued: (info: { position: number }) => void;
   /** Called each time the server refuses with 503 because it is busy with
    *  another transcription, with the wait until the automatic retry. */
   onBusy: (info: { attempt: number; retryInMs: number }) => void;
@@ -123,6 +124,7 @@ export function useTranscription(deps: TranscriptionDeps) {
     progress,
     onError,
     onAccepted,
+    onQueued,
     onBusy,
     setAppState,
     setInstruments,
@@ -246,6 +248,7 @@ export function useTranscription(deps: TranscriptionDeps) {
     // request was queued behind another transcription, so `transcribe_time_s`
     // measures transcription rather than transcription + time spent retrying.
     let startedAt = submittedAt;
+    let initialQueuePosition: number | null = null;
     let maxEnd = 0;
     let noteCount = 0;
     // Kept for the completion event, which fires after the stream has ended.
@@ -276,6 +279,14 @@ export function useTranscription(deps: TranscriptionDeps) {
           if (isStale()) return;
           startedAt = performance.now();
           onAccepted();
+        },
+        onQueued: ({ position }) => {
+          if (isStale()) return;
+          if (initialQueuePosition === null) {
+            initialQueuePosition = position;
+            track("transcription_queued", { position });
+          }
+          onQueued({ position });
         },
         onBusy: ({ attempt, retryInMs }) => {
           if (isStale()) return;
