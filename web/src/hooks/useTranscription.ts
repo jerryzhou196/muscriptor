@@ -6,14 +6,15 @@ import {
 } from "react";
 import { streamTranscribeWithRetry, TranscribeError } from "../sse";
 import { track } from "../analytics";
-import type { AudioEngine, ChordChangeAudio } from "../audio";
-import type { ProgressEstimator } from "../progress";
 import {
-  PianoRoll,
-  type BeatGrid,
-  type ChordChange,
-  type RollNote,
-} from "../pianoroll";
+  analyzeChords,
+  chordServiceEnabled,
+  transcribeApi,
+  type RecognizedChord,
+} from "../api";
+import type { AudioEngine } from "../audio";
+import type { ProgressEstimator } from "../progress";
+import { PianoRoll, type BeatGrid, type RollNote } from "../pianoroll";
 
 type StartEvent = {
   type: "start";
@@ -36,7 +37,9 @@ type TranscriptionCompleteEvent = {
   beat_grid: BeatGrid | null; // null when no constant tempo was detected
   // Recognized chord changes; empty when none were found. Carries what the
   // lane draws (`label`) and what the chord track plays (`root`, `intervals`).
-  chords: (ChordChange & ChordChangeAudio)[];
+  // Ignored when a standalone chord service is configured — then the chords
+  // come from there instead (see `chordServiceEnabled`).
+  chords: RecognizedChord[];
 };
 type ProgressMsg = {
   type: "progress";
@@ -248,10 +251,24 @@ export function useTranscription(deps: TranscriptionDeps) {
     // Kept for the completion event, which fires after the stream has ended.
     let beatGrid: BeatGrid | null = null;
     let chordCount = 0;
+    // With a standalone chord service configured, the chords come from it
+    // rather than from the transcription stream. Start that analysis now so it
+    // runs alongside the (far slower) note transcription instead of after it;
+    // the shared abort controller cancels it too when a newer upload takes
+    // over. It resolves to no chords rather than rejecting: chords are an
+    // opt-in extra, and a chord service that is asleep, busy or rate limited
+    // must not turn a perfectly good transcription into an error.
+    const chordAnalysis = chordServiceEnabled
+      ? analyzeChords(file, controller.signal).catch((e) => {
+          if (!controller.signal.aborted)
+            console.warn("chord recognition unavailable:", e);
+          return [] as RecognizedChord[];
+        })
+      : null;
     try {
       const cond = getConditioning();
       const extra = cond.length > 0 ? { instruments: cond } : undefined;
-      for await (const raw of streamTranscribeWithRetry("/transcribe", file, {
+      for await (const raw of streamTranscribeWithRetry(transcribeApi("/transcribe"), file, {
         extra,
         signal: controller.signal,
         clientId: CLIENT_ID,
@@ -284,14 +301,18 @@ export function useTranscription(deps: TranscriptionDeps) {
           beatGrid = ev.beat_grid ?? null;
           rollRef.current?.setBeatGrid(beatGrid);
           audio.shiftNotes(-(beatGrid?.onset_delay ?? 0));
-          // Chords came with it too. They were snapped to those same beats, so
-          // they go in unshifted — the lane lines up with the bar lines, and
-          // the chord track must be handed over *after* the shift above for
-          // the same reason.
-          chordCount = ev.chords?.length ?? 0;
-          rollRef.current?.setChords(ev.chords ?? []);
-          audio.setChords(ev.chords ?? []);
-          setChordCount(chordCount);
+          // Chords came with it too — unless a standalone chord service is
+          // answering for them, in which case these are ignored and its
+          // answer is applied below instead. They were snapped to those same
+          // beats, so they go in unshifted — the lane lines up with the bar
+          // lines, and the chord track must be handed over *after* the shift
+          // above for the same reason.
+          if (chordAnalysis === null) {
+            chordCount = ev.chords?.length ?? 0;
+            rollRef.current?.setChords(ev.chords ?? []);
+            audio.setChords(ev.chords ?? []);
+            setChordCount(chordCount);
+          }
           continue;
         }
         if (ev.type === "progress") {
@@ -306,6 +327,18 @@ export function useTranscription(deps: TranscriptionDeps) {
       if (isStale()) return;
       // Stop the transport ~0.3 s after the last note ends.
       if (maxEnd > 0) audio.scheduleStop(maxEnd + 0.3);
+      // Take the chord service's answer whenever it turns up, rather than
+      // waiting for it here: a cold Hugging Face Space can spend tens of
+      // seconds booting, and the transcription is finished either way. Being
+      // past the stream also means the onset-delay shift has already happened,
+      // which is the ordering `audio.setChords` requires; the chord lane and
+      // the chord track simply appear a moment later than the notes do.
+      void chordAnalysis?.then((chords) => {
+        if (isStale() || controller.signal.aborted) return;
+        rollRef.current?.setChords(chords);
+        audio.setChords(chords);
+        setChordCount(chords.length);
+      });
       setAppState("done");
       track("transcription_complete", {
         // Decoded length of the uploaded audio; 0 if decoding hasn't finished
@@ -323,12 +356,19 @@ export function useTranscription(deps: TranscriptionDeps) {
         // a "dimension" and not just a "metric" to average
         bpm_bucket: beatGrid ? bpmBucket(beatGrid.bpm) : undefined,
         beats_per_bar: beatGrid?.beats_per_bar ?? undefined,
+        // Chords that were already in hand when the transcription finished —
+        // so, with a standalone chord service, 0 whenever its answer is still
+        // in flight at this point.
         chord_count: chordCount,
       });
     } catch (e) {
       // An abort (from being superseded) surfaces here as an error — ignore it
       // so it can't clobber the newer run.
       if (isStale() || controller.signal.aborted) return;
+      // Nothing will consume the chord analysis now, so give the chord service
+      // its (deliberately scarce) slot back instead of letting the request run
+      // on for an answer with nowhere to go.
+      if (chordAnalysis !== null) controller.abort();
       setAppState("error");
       // Prefer the server's explanation (e.g. an undecodable file) over a
       // generic message; fall back when the failure was a network error or

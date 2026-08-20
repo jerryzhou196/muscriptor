@@ -6,6 +6,7 @@ import { SheetsDialog, type SheetFile } from "./SheetsDialog";
 import type { TranscriptionResult } from "../hooks/useTranscription";
 import { IconChevron, IconDownload } from "./icons";
 import { track } from "../analytics";
+import { transcribeApi } from "../api";
 
 /** The FastAPI `detail` of a failed response, or its raw body if it isn't one. */
 async function errorDetail(resp: Response): Promise<string> {
@@ -106,7 +107,7 @@ export function OutputBar(props: {
       form.append("mode", mode);
       form.append("midi", result.midi, "transcription.mid");
       if (mode === "mix") form.append("audio", currentFile);
-      const resp = await fetch("/auralize", { method: "POST", body: form });
+      const resp = await fetch(transcribeApi("/auralize"), { method: "POST", body: form });
       if (!resp.ok) throw new Error(await errorDetail(resp));
       const wavBlob = await resp.blob();
       const url = URL.createObjectURL(wavBlob);
@@ -148,7 +149,7 @@ export function OutputBar(props: {
       const engrave = result.quantizedMidi ?? result.midi;
       form.append("midi", engrave, "transcription.mid");
       form.append("quantized", String(result.quantizedMidi !== null));
-      const resp = await fetch("/sheets", { method: "POST", body: form });
+      const resp = await fetch(transcribeApi("/sheets"), { method: "POST", body: form });
       if (!resp.ok) throw new Error(await errorDetail(resp));
       const zipBlob = await resp.blob();
       // The members are stored, not deflated, so this unpacking is a copy out
