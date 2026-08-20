@@ -33,11 +33,11 @@ const QA: { q: string; a: string }[] = [
   },
   {
     q: "Can I convert a song to sheet music with it?",
-    a: "Yes. After transcribing, the download menu gives you the sheet music as PDFs, either per-instrument or the full score. You also get the MusicXML if you want to edit it in software like MuseScore, Sibelius or Guitar Pro.",
+    a: "Yes. After transcribing, the download menu gives you the sheet music as PDFs, either per-instrument or the full score. You also get the MusicXML if you want to edit it in software like MuseScore, Sibelius or Guitar Pro — that one comes with the chord symbols heard in the recording written above the top staff.",
   },
   {
     q: "Can it give me guitar tabs?",
-    a: "Yes. Fretted instruments like guitar and bass also yield a tablature PDF, next to the standard notation. Download it from the sheet music menu after transcribing. It does not write chord symbols, only the notes that are actually played.",
+    a: "Yes. Fretted instruments like guitar and bass also yield a tablature PDF, next to the standard notation. Download it from the sheet music menu after transcribing. The tablature itself is only the notes that are actually played; the chord symbols are in the MusicXML.",
   },
   {
     q: "Can I run it locally or use it from Python?",

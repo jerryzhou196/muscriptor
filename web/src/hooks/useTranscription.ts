@@ -6,9 +6,14 @@ import {
 } from "react";
 import { streamTranscribeWithRetry, TranscribeError } from "../sse";
 import { track } from "../analytics";
-import type { AudioEngine } from "../audio";
+import type { AudioEngine, ChordChangeAudio } from "../audio";
 import type { ProgressEstimator } from "../progress";
-import { PianoRoll, type BeatGrid, type RollNote } from "../pianoroll";
+import {
+  PianoRoll,
+  type BeatGrid,
+  type ChordChange,
+  type RollNote,
+} from "../pianoroll";
 
 type StartEvent = {
   type: "start";
@@ -29,6 +34,9 @@ type TranscriptionCompleteEvent = {
   // no grid to snap them to.
   quantized_midi: string | null;
   beat_grid: BeatGrid | null; // null when no constant tempo was detected
+  // Recognized chord changes; empty when none were found. Carries what the
+  // lane draws (`label`) and what the chord track plays (`root`, `intervals`).
+  chords: (ChordChange & ChordChangeAudio)[];
 };
 type ProgressMsg = {
   type: "progress";
@@ -93,6 +101,9 @@ export interface TranscriptionDeps {
   /** Source audio file, re-uploaded to /auralize alongside the MIDI. */
   setCurrentFile: (file: File | null) => void;
   setUserScrolled: (v: boolean) => void;
+  /** How many chords were recognized, so the UI can offer (or grey out) the
+   *  chord track. Reset to 0 when a new transcription starts. */
+  setChordCount: (n: number) => void;
 }
 
 /**
@@ -115,6 +126,7 @@ export function useTranscription(deps: TranscriptionDeps) {
     setResult,
     setCurrentFile,
     setUserScrolled,
+    setChordCount,
   } = deps;
 
   // Names already surfaced in the instrument list this run.
@@ -137,6 +149,7 @@ export function useTranscription(deps: TranscriptionDeps) {
     rollRef.current?.clear();
     knownRef.current.clear();
     setInstruments([]);
+    setChordCount(0);
     openNotesRef.current.clear();
     audio.reset();
     setUserScrolled(false);
@@ -234,6 +247,7 @@ export function useTranscription(deps: TranscriptionDeps) {
     let noteCount = 0;
     // Kept for the completion event, which fires after the stream has ended.
     let beatGrid: BeatGrid | null = null;
+    let chordCount = 0;
     try {
       const cond = getConditioning();
       const extra = cond.length > 0 ? { instruments: cond } : undefined;
@@ -270,6 +284,14 @@ export function useTranscription(deps: TranscriptionDeps) {
           beatGrid = ev.beat_grid ?? null;
           rollRef.current?.setBeatGrid(beatGrid);
           audio.shiftNotes(-(beatGrid?.onset_delay ?? 0));
+          // Chords came with it too. They were snapped to those same beats, so
+          // they go in unshifted — the lane lines up with the bar lines, and
+          // the chord track must be handed over *after* the shift above for
+          // the same reason.
+          chordCount = ev.chords?.length ?? 0;
+          rollRef.current?.setChords(ev.chords ?? []);
+          audio.setChords(ev.chords ?? []);
+          setChordCount(chordCount);
           continue;
         }
         if (ev.type === "progress") {
@@ -301,6 +323,7 @@ export function useTranscription(deps: TranscriptionDeps) {
         // a "dimension" and not just a "metric" to average
         bpm_bucket: beatGrid ? bpmBucket(beatGrid.bpm) : undefined,
         beats_per_bar: beatGrid?.beats_per_bar ?? undefined,
+        chord_count: chordCount,
       });
     } catch (e) {
       // An abort (from being superseded) surfaces here as an error — ignore it

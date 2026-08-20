@@ -55,6 +55,7 @@ dependencies = [
     "python-multipart>=0.0.29",
     "soundfile>=0.14.0",
     "beat-this>=1.1",  # Tempo and downbeat tracking
+    "librosa>=0.10",  # Constant-Q transform, the chord model's input feature
 ]
 
 [project.urls]

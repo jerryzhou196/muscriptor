@@ -8,7 +8,7 @@ import re
 import sys
 import time
 import warnings
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -51,6 +51,7 @@ from muscriptor.utils.beats import (
     TempoDetection,
     detect_grid,
 )
+from muscriptor.utils.chords import Chord, ChordDetectionError, detect_chords
 from muscriptor.utils.download import download_companion, download_if_necessary
 from muscriptor.utils.midi import notes_to_midi
 
@@ -630,6 +631,7 @@ class TranscriptionModel:
         beam_size: int = 1,
         prelude_forcing: bool = True,
         detect_tempo: TempoDetection = "best-effort",
+        recognize_chords: bool = True,
         quantize: bool = False,
     ) -> tuple[bytes, BeatGrid | None]:
         """Same as :meth:`transcribe`, but as a MIDI file plus the grid it used.
@@ -642,8 +644,14 @@ class TranscriptionModel:
         music has to be engraved from (see :meth:`events_to_midi_bytes`) and not
         what anyone wants to listen to. The returned grid says whether there was
         a subdivision to snap to at all.
+
+        `recognize_chords` hears the harmony from the audio and writes it into
+        the MIDI as markers, snapped to the detected beat grid when available.
         """
         beat_grid = self.detect_beat_grid_for(audio, detect_tempo)
+        chords = (
+            self.recognize_chords_for(audio, beat_grid) if recognize_chords else []
+        )
         events = list(
             self.transcribe(
                 audio,
@@ -662,7 +670,10 @@ class TranscriptionModel:
                 [ev.start_time for ev in events if isinstance(ev, NoteStartEvent)]
             )
         midi_bytes = self.events_to_midi_bytes(
-            iter(events), beat_grid=beat_grid, quantize=quantize
+            iter(events),
+            beat_grid=beat_grid,
+            chords=chords,
+            quantize=quantize,
         )
         return midi_bytes, beat_grid
 
@@ -695,16 +706,40 @@ class TranscriptionModel:
             )
             return None
 
+    def recognize_chords_for(
+        self,
+        audio: str | Path | tuple[torch.Tensor, int],
+        grid: BeatGrid | None = None,
+    ) -> list[Chord]:
+        """Recognize `audio`'s chords, snapped to `grid` when there is one.
+
+        Accepts the same input forms as :meth:`transcribe`. Never fatal: chord
+        recognition is an extra on top of the transcription, so a missing
+        dependency or an unreadable checkpoint costs the chord track and
+        nothing else.
+        """
+        tensor, sample_rate = audio if isinstance(audio, tuple) else (audio, None)
+        try:
+            wav = self._load_wav(tensor, sample_rate)
+            return detect_chords(wav, _SAMPLE_RATE, grid, device=self._device)
+        except ChordDetectionError as e:
+            print(f"Warning: {e}; continuing without chords", file=sys.stderr)
+            return []
+
     def events_to_midi_bytes(
         self,
         events: Iterator[NoteStartEvent | NoteEndEvent | ProgressEvent],
         beat_grid: BeatGrid | None = None,
+        chords: Sequence[Chord] | None = None,
         quantize: bool = False,
     ) -> bytes:
         """Reassemble Notes from a NoteStart/NoteEnd stream and serialize MIDI.
 
         Shared by :meth:`transcribe_and_postprocess` and the HTTP server, so the MIDI
         bytes are identical regardless of how the events were obtained.
+
+        `chords` (from :meth:`recognize_chords_for`) are written along as
+        markers, moved onto the beat grid with the notes.
 
         `quantize` snaps the notes onto `beat_grid.beat_subdivision` first,
         which is what sheet music has to be engraved from (see
@@ -743,7 +778,11 @@ class TranscriptionModel:
         notes = validate_notes(notes, fix=True)
         notes = trim_overlapping_notes(notes, sort=True)
         midi = notes_to_midi(
-            notes, program_names=program_names, beat_grid=beat_grid, quantize=quantize
+            notes,
+            program_names=program_names,
+            beat_grid=beat_grid,
+            chords=chords,
+            quantize=quantize,
         )
         buf = io.BytesIO()
         midi.save(file=buf)

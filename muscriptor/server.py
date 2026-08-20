@@ -8,8 +8,12 @@ or any format soundfile/libsndfile can read — mp3, flac, ogg, m4a, …) return
 `transcription_complete` event carrying the base64-encoded .mid file (`data`)
 plus the detected `beat_grid`
 (`{bpm, beats_per_bar, first_downbeat, onset_delay}`, or null if no tempo was
-found). `onset_delay` is how late the streamed note times are against those
-beats: the MIDI has it taken out already, an SSE consumer has to subtract it.
+found) and the recognized `chords` (`[{time, label, root, intervals}]`, chord
+changes in the same times the beat grid is drawn in, each with the notes it is
+made of so a client can sound it). `onset_delay` is how late the streamed
+note times are against those beats: the MIDI has it taken out already, an SSE
+consumer has to subtract it. The chord times need no such correction — they
+were snapped to the beats themselves.
 
 POST /transcribe/midi takes the same upload but blocks until transcription
 completes and returns the raw `audio/midi` bytes directly (no SSE, no
@@ -48,6 +52,7 @@ from muscriptor.tokenizer.mt3 import MT3_FULL_PLUS_GROUP_NAMES
 from muscriptor.transcription_model import TranscriptionModel
 from muscriptor.utils.audio import _read_non_wav_file, _read_wav_file
 from muscriptor.utils.beats import BeatDetectionError, TempoDetection
+from muscriptor.utils.chords import prefers_flats, published_chords
 from muscriptor.utils.download import download_if_necessary
 from muscriptor.utils.sheets import (
     MuseScoreError,
@@ -221,6 +226,9 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
         instruments: Annotated[list[str], Form(default_factory=list)],
         # "true" fails loudly on tempo detection errors, "false" doesn't even try
         detect_tempo: Annotated[TempoDetection, Form()] = "best-effort",
+        # Chord recognition costs a few seconds of CPU on top of the tempo
+        # detection; a client that only wants notes can turn it off.
+        chords: Annotated[bool, Form()] = True,
         x_client_id: Annotated[str | None, Header()] = None,
     ) -> StreamingResponse:
         data = await file.read()
@@ -311,13 +319,28 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
                             if isinstance(ev, NoteStartEvent)
                         ]
                     )
-                midi_bytes = model.events_to_midi_bytes(iter(events), beat_grid=grid)
+                # Chords come from the audio, not the notes, so they are
+                # recognized here rather than derived from the event stream —
+                # and snapped to the grid that was just detected, which is what
+                # puts a chord change on a bar line instead of near one.
+                recognized = (
+                    model.recognize_chords_for((wav, sr), grid) if chords else []
+                )
+                midi_bytes = model.events_to_midi_bytes(
+                    iter(events), beat_grid=grid, chords=recognized
+                )
+                # Decided once, so the symbols the UI shows are spelled exactly
+                # like the ones just written into the MIDI.
+                spelling = prefers_flats(recognized)
                 midi_b64 = base64.b64encode(midi_bytes).decode("ascii")
                 # A second copy with the notes snapped to the beat grid. Useful for
                 # writing sheet music where we want "idealized" timing
                 quantized_midi = (
                     model.events_to_midi_bytes(
-                        iter(events), beat_grid=grid, quantize=True
+                        iter(events),
+                        beat_grid=grid,
+                        chords=recognized,
+                        quantize=True,
                     )
                     if grid is not None and grid.beat_subdivision is not None
                     else None
@@ -346,6 +369,22 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
                         }
                         if grid
                         else None,
+                        # The chord track, in the same times the beat grid is
+                        # drawn in (no onset_delay: the chords were snapped to
+                        # the beats, not to the notes). Same symbols, and the
+                        # same spelling, as the MIDI markers carry. `root` and
+                        # `intervals` are what the chord is made of, so the UI
+                        # can sound it without knowing any music theory; both
+                        # are empty for an "N.C." span.
+                        "chords": [
+                            {
+                                "time": chord.start,
+                                "label": chord.label(spelling),
+                                "root": chord.root,
+                                "intervals": list(chord.intervals),
+                            }
+                            for chord in published_chords(recognized)
+                        ],
                     }
                 )
                 yield f"data: {payload}\n\n"
@@ -365,6 +404,7 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
         instruments: Annotated[list[str], Form(default_factory=list)],
         # "true" fails loudly on tempo detection errors, "false" doesn't even try
         detect_tempo: Annotated[TempoDetection, Form()] = "best-effort",
+        chords: Annotated[bool, Form()] = True,
         x_client_id: Annotated[str | None, Header()] = None,
     ) -> Response:
         """Transcribe an audio file and return the .mid file directly.
@@ -418,6 +458,7 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
                 (wav, sr),
                 instruments=instruments or None,
                 detect_tempo=detect_tempo,
+                recognize_chords=chords,
             )
         except BeatDetectionError as e:
             # Only reachable with detect_tempo=true, where the caller wants an error

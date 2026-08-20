@@ -111,6 +111,36 @@ It works best if there is a steady tempo (i.e. playing with a metronome), becaus
 that allows us to quantize the notes (snap them to a grid) for a cleaner transcription.
 Rubato recordings will work significantly worse.
 
+`score.musicxml` also carries the chord symbols (see below), written above the
+top staff — open it in MuseScore, Sibelius or Guitar Pro and you have a lead
+sheet. The PDFs are rendered from the MIDI import and show the notes only.
+
+### Chord recognition
+
+The chords are heard rather than worked out from the transcribed notes: the
+audio goes through [BTC](https://github.com/jayg996/BTC-ISMIR19), the
+bi-directional transformer for chord recognition (Park et al., ISMIR 2019),
+which labels every ~93 ms of audio with one of 170 chords — 12 roots x 14
+qualities (major, minor, 6, 7, maj7, m7, m7b5, dim7, sus2, sus4, …), plus "no
+chord". Its weights are downloaded and cached on first use, like the
+transcription model's.
+
+Each chord change is then snapped to the nearest detected beat, so it lands on
+a bar or beat line in the score rather than a 32nd note away from one. That
+means chords follow the tempo detection: with `--detect-tempo false` they stay
+where the model heard them.
+
+The chord track travels inside the MIDI file, as markers named
+`muscriptor:chord=<symbol>`, so it survives a round trip through a DAW and
+through `POST /sheets`. Pass `--no-chords` to skip the analysis.
+
+```bash
+muscriptor transcribe audio.wav --no-chords
+```
+
+In the web UI the chords appear in a lane above the piano roll, with the chord
+under the playhead highlighted as the transcription plays.
+
 ## Using from Python
 
 MuScriptor is also on PyPI, so you can install it with with uv (recommended) or with pip:
@@ -189,6 +219,11 @@ The model weights, published on
 
 The MuseScore General SoundFont downloaded for playback is
 distributed under its own (MIT) license.
+
+Chord recognition uses [BTC](https://github.com/jayg996/BTC-ISMIR19) by
+Jonggwon Park, whose model code is ported into `muscriptor/models/btc.py` and
+whose published weights are downloaded at runtime; both are under the
+[MIT license](LICENSE-BTC).
 
 ## Citation
 

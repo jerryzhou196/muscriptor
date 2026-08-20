@@ -98,6 +98,9 @@
   --roll-playhead: #ff5577;
   --roll-key-black: #23232b;
   --roll-key-white: #cfd2dc;
+  --roll-chord-lane: #12131a; /* chord lane across the top of the note area */
+  --roll-chord-text: #8b8fa3;
+  --roll-chord-text-now: #f2f4f8; /* the chord under the playhead */
 }
 
 /* ---- base -------------------------------------------------------------- */

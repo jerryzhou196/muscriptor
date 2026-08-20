@@ -123,6 +123,7 @@ def test_transcribe_streams_sse_events(tmp_path):
         # FAKE_MIDI is not real MIDI and there is no grid, so nothing to snap.
         "quantized_midi": None,
         "beat_grid": None,
+        "chords": [],
     }
     assert model.transcribe.call_count == 1
 
@@ -195,6 +196,7 @@ def test_transcribe_empty_stream(tmp_path):
             "data": base64.b64encode(FAKE_MIDI).decode("ascii"),
             "quantized_midi": None,
             "beat_grid": None,
+            "chords": [],
         }
     ]
 
@@ -423,6 +425,7 @@ def test_concurrent_different_clients_do_not_preempt(tmp_path):
         # FAKE_MIDI is not real MIDI and there is no grid, so nothing to snap.
         "quantized_midi": None,
         "beat_grid": None,
+        "chords": [],
     }
 
     # Once A has released the lock, B's retry (as the frontend would send)

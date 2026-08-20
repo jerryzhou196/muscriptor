@@ -9,9 +9,15 @@ check would report success on an empty directory.
 MuseScore 4 or newer is required. MuseScore 3 writes a different project format
 (no <StringData> on its instruments, so nothing says how a guitar is tuned), and
 `convert_to_tab_staves` would quietly produce a score with no tablature in it.
+
+Chord symbols take a detour around MuseScore: it imports a MIDI marker as text
+in the score, so the recognized chords the MIDI carries are stripped out before
+the import and written back into the exported MusicXML as `<harmony>`, which is
+what an engraver actually draws above the staff.
 """
 
 import base64
+import io
 import json
 import os
 import platform
@@ -22,6 +28,11 @@ import sys
 import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+from mido import MidiFile
+
+from muscriptor.utils.chords import read_chord_markers, strip_chord_markers
+from muscriptor.utils.harmony import add_chord_symbols
 
 # Names MuseScore 3 and 4 install themselves under, plus the AppImage that the
 # Linux downloads page hands out (which people usually leave in $HOME).
@@ -330,6 +341,28 @@ def _retype_as_tablature(staff: ET.Element, preset: str, strings: int) -> None:
     ET.SubElement(staff_type, "lineDistance").text = _TAB_LINE_DISTANCE
 
 
+def _split_off_chords(
+    midi_bytes: bytes, tmp_dir: Path, fallback: Path
+) -> tuple[list[tuple[float, str]], Path]:
+    """The chord track in `midi_bytes`, and the MIDI file to engrave from.
+
+    The returned path is a marker-free copy of the upload when there are chords
+    to take out, and `fallback` (the untouched file) otherwise — including when
+    the bytes aren't MIDI this can parse, since that is MuseScore's problem to
+    report, not this function's.
+    """
+    try:
+        midi = MidiFile(file=io.BytesIO(midi_bytes))
+        chords = read_chord_markers(midi)
+    except Exception:
+        return [], fallback
+    if not chords:
+        return [], fallback
+    stripped = tmp_dir / "import.mid"
+    strip_chord_markers(midi).save(str(stripped))
+    return chords, stripped
+
+
 def write_sheets(
     midi_bytes: bytes,
     out_dir: Path,
@@ -343,6 +376,9 @@ def write_sheets(
     additionally get a tablature PDF of their own, rendered from a second copy
     of the score whose staves are retyped as tab. `out_dir` is created if it
     does not exist.
+
+    Chord symbols recognized from the audio ride along in the MIDI as markers
+    (see `muscriptor.utils.chords`); they end up in the MusicXML as `<harmony>`.
 
     `quantized` says whether the notes are already snapped to a beat grid (by
     `muscriptor.utils.midi.quantized_notes`), which is what the engraving wants:
@@ -361,10 +397,12 @@ def write_sheets(
         options = tmp_dir / "import.xml"
         options.write_text(import_options(quantized))
 
+        chords, to_import = _split_off_chords(midi_bytes, tmp_dir, midi_path)
+
         # MuseScore's own project format, so the score can be copied and edited
         # (staves retyped as tab) before anything is rendered from it.
         mscx = tmp_dir / "score.mscx"
-        proc = _run(binary, ["-M", str(options), "-o", str(mscx), str(midi_path)])
+        proc = _run(binary, ["-M", str(options), "-o", str(mscx), str(to_import)])
         if not mscx.is_file():
             _fail("import the MIDI file", proc)
 
@@ -372,6 +410,8 @@ def write_sheets(
         proc = _run(binary, ["-o", str(musicxml), str(mscx)])
         if not musicxml.is_file():
             _fail("write MusicXML", proc)
+        if chords:
+            add_chord_symbols(musicxml, chords)
         written.append(musicxml)
 
         full_score = out_dir / "full_score.pdf"

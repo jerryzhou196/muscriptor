@@ -65,12 +65,51 @@ export const INSTRUMENT_ORDER: string[] = [...Object.keys(GM_PROGRAM), "drums"];
 /** Velocity used for every synthesized note. */
 const NOTE_VELOCITY = 100;
 
+/**
+ * Pseudo-instrument the recognized chords are played on. Deliberately not a
+ * member of GM_PROGRAM: it is a backing track the user can switch on, not
+ * something the model transcribed, so it must stay out of INSTRUMENT_ORDER
+ * (piano-roll colours) and out of the instrument list. Everything else about
+ * it — channel assignment, sample warm-up, muting, re-scheduling on seek —
+ * comes free from being scheduled like any other note.
+ */
+const CHORD_INSTRUMENT = "chords";
+/** GM Electric Piano 1: enough attack to mark each change, easy to sit under a mix. */
+const CHORD_PROGRAM = 4;
+/** Channel gain for the chord track, so it comps under the transcription. */
+const CHORD_GAIN = 0.4;
+/** MIDI pitch the chord roots are voiced from — C3, the middle of a comping range. */
+const CHORD_ROOT_PITCH = 48;
+
+/** A chord change from the backend: `intervals` are semitones above `root`. */
+export type ChordChangeAudio = {
+  time: number;
+  root: number | null;
+  intervals: number[];
+};
+
 type NoteOpts = {
   instrument: string;
   pitch: number;
   start: number;
   end: number;
 };
+
+/** GM program for an instrument group, or for the chord track's backing piano. */
+function programFor(instrument: string): number {
+  if (instrument === CHORD_INSTRUMENT) return CHORD_PROGRAM;
+  return GM_PROGRAM[instrument] ?? 0;
+}
+
+/**
+ * Voice a chord as MIDI pitches: the root just below middle C with the rest of
+ * the chord stacked above it. Root position throughout — every chord in a song
+ * is then built the same way, which keeps the comp predictable instead of
+ * lurching an octave whenever the root crosses B.
+ */
+export function voiceChord(root: number, intervals: number[]): number[] {
+  return intervals.map((semitones) => CHORD_ROOT_PITCH + root + semitones);
+}
 
 export class AudioEngine {
   private ctx!: AudioContext;
@@ -99,6 +138,8 @@ export class AudioEngine {
   private mix = 0.75; // 0 = full WAV, 1 = full MIDI
   /** When true: original audio hard-left, synthesis hard-right (mix ignored). */
   private stereo = false;
+  /** Whether the recognized chords are audible. Off until the user asks for them. */
+  private chordsEnabled = false;
 
   constructor() {
     // Tone.getContext() lazily creates a (suspended) AudioContext — no user
@@ -216,7 +257,12 @@ export class AudioEngine {
       ch = this.nextChannel++;
       if (this.nextChannel === DRUM_CHANNEL) this.nextChannel++;
       while (ch >= synth.channelCount) synth.addNewChannel();
-      synth.programChange(ch, GM_PROGRAM[instrument] ?? 0);
+      synth.programChange(ch, programFor(instrument));
+      // The chord track is a backing part, so it comps below the transcription
+      // rather than competing with it.
+      if (instrument === CHORD_INSTRUMENT) {
+        synth.midiChannels[ch]?.setSystemParameter("gain", CHORD_GAIN);
+      }
     }
     if (this.mutedInstruments.has(instrument)) {
       synth.midiChannels[ch]?.setSystemParameter("isMuted", true);
@@ -246,7 +292,7 @@ export class AudioEngine {
     if (instrument === "drums") {
       synth.midiChannels[ch]?.setDrums(true);
     } else {
-      synth.programChange(ch, GM_PROGRAM[instrument] ?? 0);
+      synth.programChange(ch, programFor(instrument));
     }
     synth.midiChannels[ch]?.setSystemParameter("gain", 0);
     this.warmChannels.set(instrument, ch);
@@ -303,6 +349,48 @@ export class AudioEngine {
     }
     this.wavSource.disconnect();
     this.wavSource = null;
+  }
+
+  /**
+   * Schedule the recognized chords as a backing part, held for as long as each
+   * chord lasts. They stay silent until {@link setChordsEnabled} switches the
+   * track on, so the option costs nothing until it is used.
+   *
+   * Call this *after* {@link shiftNotes}: the chords were snapped to the beat
+   * grid, not measured from the note onsets, so they must not take the onset
+   * correction the transcribed notes do.
+   *
+   * `changes` are the chord changes in order, each running until the next one
+   * (the last until the end of the audio). An "N.C." change has no root and so
+   * sounds nothing — which is the point: it stops the chord before it.
+   */
+  setChords(changes: ChordChangeAudio[]) {
+    // Replacing a previous chord track rather than layering onto it.
+    this.allNotes = this.allNotes.filter((n) => n.instrument !== CHORD_INSTRUMENT);
+    this.pendingNotes = this.pendingNotes.filter(
+      (n) => n.instrument !== CHORD_INSTRUMENT,
+    );
+    const last = changes[changes.length - 1];
+    // The final chord runs to the end of the recording; without a decoded
+    // length to go on, give it a few seconds rather than an instant.
+    const finish = this.duration || (last ? last.time + 4 : 0);
+    for (let i = 0; i < changes.length; i++) {
+      const { time, root, intervals } = changes[i];
+      const end = i + 1 < changes.length ? changes[i + 1].time : finish;
+      if (root === null || end <= time) continue;
+      for (const pitch of voiceChord(root, intervals)) {
+        this.scheduleNote({ instrument: CHORD_INSTRUMENT, pitch, start: time, end });
+      }
+    }
+    // reset() unmutes every channel, so the switch has to be re-applied to the
+    // channel this just (re)created.
+    this.setInstrumentMuted(CHORD_INSTRUMENT, !this.chordsEnabled);
+  }
+
+  /** Play the recognized chords along with the transcription, or don't. Works live. */
+  setChordsEnabled(enabled: boolean) {
+    this.chordsEnabled = enabled;
+    this.setInstrumentMuted(CHORD_INSTRUMENT, !enabled);
   }
 
   /** Schedule a note at transport time `start` for `duration` seconds. */

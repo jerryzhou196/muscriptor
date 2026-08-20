@@ -1,6 +1,7 @@
 """MIDI output utilities."""
 
 import dataclasses
+from collections.abc import Sequence
 
 from muscriptor.tokenizer.notes import (
     Note,
@@ -9,6 +10,7 @@ from muscriptor.tokenizer.notes import (
     trim_overlapping_notes,
 )
 from muscriptor.utils.beats import BeatGrid
+from muscriptor.utils.chords import Chord, to_markers
 
 # Written when no grid was detected: 120 BPM and no time signature, leaving the
 # meter for notation software to guess.
@@ -32,6 +34,7 @@ def notes_to_midi(
     velocity: int = 100,
     program_names: dict[int, str] | None = None,
     beat_grid: BeatGrid | None = None,
+    chords: Sequence[Chord] | None = None,
     quantize: bool = False,
 ):
     """Convert a list of Note objects to a mido MidiFile.
@@ -46,6 +49,10 @@ def notes_to_midi(
     The notes are moved onto the beat grid based on its `onset_delay` to better match
     the grid.
 
+    `chords` are the recognized chords (see muscriptor.utils.chords), written
+    as markers on the meta track. They move with the notes, so a chord change
+    stays over the notes it belongs to.
+
     `quantize` additionally snaps every note onto the beat subdivision, if present
     in the passed `beat_grid`.
     """
@@ -53,6 +60,9 @@ def notes_to_midi(
     if beat_grid.onset_delay is None:
         beat_grid = beat_grid.with_onset_delay([n.onset for n in notes])
     delay = beat_grid.onset_delay
+    markers = [
+        (seconds - delay, symbol) for seconds, symbol in to_markers(chords or [])
+    ]
     offset = beat_grid.bar_offset(min_shift=delay)
     notes = shifted_notes(notes, -delay)
 
@@ -68,6 +78,7 @@ def notes_to_midi(
         program_names=program_names,
         beats_per_bar=beat_grid.beats_per_bar,
         offset_s=offset,
+        chord_markers=markers,
     )
 
 

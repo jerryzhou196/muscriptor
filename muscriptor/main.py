@@ -49,7 +49,13 @@ class OutputFormat(str, Enum):
     sheets = "sheets"
 
 
-def _transcribe(model, kwargs: dict, detect_tempo: str, quantize: bool = False):
+def _transcribe(
+    model,
+    kwargs: dict,
+    detect_tempo: str,
+    recognize_chords: bool = True,
+    quantize: bool = False,
+):
     """transcribe_and_postprocess, with the CLI's --detect-tempo spelling and errors."""
     try:
         mode: TempoDetection = {
@@ -58,7 +64,10 @@ def _transcribe(model, kwargs: dict, detect_tempo: str, quantize: bool = False):
             "best-effort": "best-effort",
         }[detect_tempo]
         return model.transcribe_and_postprocess(
-            **kwargs, detect_tempo=mode, quantize=quantize
+            **kwargs,
+            detect_tempo=mode,
+            recognize_chords=recognize_chords,
+            quantize=quantize,
         )
     except BeatDetectionError as e:
         typer.echo(f"Error: {e}", err=True)
@@ -239,6 +248,18 @@ def transcribe(
             ),
         ),
     ] = "best-effort",
+    chords: Annotated[
+        bool,
+        typer.Option(
+            "--chords/--no-chords",
+            help=(
+                "Recognize the chords in the audio (BTC, ISMIR 2019) and write "
+                "them as markers in the MIDI, and as chord symbols above the "
+                "staff with --format sheets. Chord changes are snapped to the "
+                "detected beats, so --detect-tempo false leaves them unaligned."
+            ),
+        ),
+    ] = True,
 ) -> None:
     """Transcribe an audio file to MIDI."""
     instrument_names: list[str] | None = None
@@ -326,7 +347,9 @@ def transcribe(
     if format == OutputFormat.sheets:
         # Quantize to get the "idealized" timing, otherwise we might get very weird
         # 1/64th rests etc.
-        midi_bytes, grid = _transcribe(model, kwargs, detect_tempo, quantize=True)
+        midi_bytes, grid = _transcribe(
+            model, kwargs, detect_tempo, recognize_chords=chords, quantize=True
+        )
         typer.echo(f"Engraving sheet music with MuseScore → {output} …", err=True)
         try:
             written = write_sheets(
@@ -341,7 +364,9 @@ def transcribe(
             typer.echo(f"  {path.name}", err=True)
         typer.echo(f"Saved {len(written)} files to {output}", err=True)
     elif format == OutputFormat.midi:
-        midi_bytes, _ = _transcribe(model, kwargs, detect_tempo)
+        midi_bytes, _ = _transcribe(
+            model, kwargs, detect_tempo, recognize_chords=chords
+        )
         if is_stdout:
             sys.stdout.buffer.write(midi_bytes)
             sys.stdout.buffer.flush()
