@@ -17,8 +17,8 @@ were snapped to the beats themselves.
 
 POST /transcribe/midi takes the same upload but blocks until transcription
 completes and returns the raw `audio/midi` bytes directly (no SSE, no
-base64), with a `Content-Disposition: attachment` header. Audio longer than
-15 minutes is rejected with 413.
+base64), with a `Content-Disposition: attachment` header. Both transcription
+endpoints reject audio longer than 15 seconds with 413.
 
 POST /sheets takes a MIDI upload instead of audio (the `quantized_midi` from
 /transcribe, with `quantized=true`) and returns every file
@@ -82,9 +82,21 @@ def _make_release_once(lock: threading.Lock):
     return release
 
 
-_MAX_TRANSCRIBE_MIDI_DURATION_S = 15 * 60
+_MAX_AUDIO_DURATION_S = 15
 
 SHEETS_ZIP_NAME = "sheets.zip"
+
+
+def _enforce_audio_duration(wav, sample_rate: int) -> None:
+    duration_s = wav.shape[-1] / sample_rate
+    if duration_s > _MAX_AUDIO_DURATION_S:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"audio file is {duration_s:.2f} seconds long; "
+                f"the limit is {_MAX_AUDIO_DURATION_S} seconds"
+            ),
+        )
 
 
 def engrave_to_zip(midi_bytes: bytes, quantized: bool = False) -> bytes:
@@ -248,6 +260,8 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
                     status_code=400,
                     detail=f"could not decode audio file '{file.filename}': {e}",
                 ) from e
+
+        _enforce_audio_duration(wav, sr)
 
         unknown = [n for n in instruments if n not in MT3_FULL_PLUS_GROUP_NAMES]
         if unknown:
@@ -426,15 +440,7 @@ def create_app(model: TranscriptionModel, web_dir: str | Path | None = None) -> 
                     detail=f"could not decode audio file '{file.filename}': {e}",
                 ) from e
 
-        duration_s = wav.shape[-1] / sr
-        if duration_s > _MAX_TRANSCRIBE_MIDI_DURATION_S:
-            raise HTTPException(
-                status_code=413,
-                detail=(
-                    f"audio file is {duration_s / 60:.1f} minutes long; "
-                    f"the limit is {_MAX_TRANSCRIBE_MIDI_DURATION_S // 60:.0f} minutes"
-                ),
-            )
+        _enforce_audio_duration(wav, sr)
 
         unknown = [n for n in instruments if n not in MT3_FULL_PLUS_GROUP_NAMES]
         if unknown:

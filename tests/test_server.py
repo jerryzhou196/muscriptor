@@ -266,6 +266,34 @@ def test_transcribe_rejects_undecodable_file():
     assert resp.status_code == 400
 
 
+def test_transcribe_rejects_audio_over_duration_limit(tmp_path, monkeypatch):
+    """The streaming endpoint rejects long audio before touching the model."""
+    monkeypatch.setattr(server_module, "_MAX_AUDIO_DURATION_S", 0.05)
+    model = make_model()
+    client = TestClient(create_app(model), raise_server_exceptions=False)
+    resp = client.post(
+        "/transcribe",
+        files={"file": ("silent.wav", _wav_bytes(tmp_path), "audio/wav")},
+    )
+    assert resp.status_code == 413
+    assert resp.json()["detail"] == (
+        "audio file is 0.10 seconds long; the limit is 0.05 seconds"
+    )
+    model.transcribe.assert_not_called()
+
+
+def test_transcribe_accepts_audio_at_duration_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr(server_module, "_MAX_AUDIO_DURATION_S", 0.1)
+    model = make_model()
+    client = TestClient(create_app(model))
+    resp = client.post(
+        "/transcribe",
+        files={"file": ("silent.wav", _wav_bytes(tmp_path), "audio/wav")},
+    )
+    assert resp.status_code == 200
+    model.transcribe.assert_called_once()
+
+
 def test_transcribe_passes_instruments(tmp_path):
     model = make_model()
     client = TestClient(create_app(model))
@@ -333,9 +361,9 @@ def test_transcribe_midi_rejects_unknown_instrument(tmp_path):
 
 
 def test_transcribe_midi_rejects_audio_over_duration_limit(tmp_path, monkeypatch):
-    """Audio longer than the 15-minute cap is rejected with 413, before the
+    """Audio longer than the 15-second cap is rejected with 413, before the
     model is ever touched."""
-    monkeypatch.setattr(server_module, "_MAX_TRANSCRIBE_MIDI_DURATION_S", 0.05)
+    monkeypatch.setattr(server_module, "_MAX_AUDIO_DURATION_S", 0.05)
     model = make_model()
     client = TestClient(create_app(model), raise_server_exceptions=False)
     resp = client.post(
