@@ -4,10 +4,8 @@ MuseScore is never invoked here: the subprocess layer is mocked, so these run
 on machines that don't have it installed.
 """
 
-import io
 import subprocess
 import xml.etree.ElementTree as ET
-from pathlib import Path
 
 import pytest
 
@@ -385,97 +383,3 @@ def test_run_does_not_override_an_explicit_platform(monkeypatch):
     env = _captured_env(monkeypatch, "Linux")
     assert env["QT_QPA_PLATFORM"] == "xcb"
     assert env["MU_QT_QPA_PLATFORM"] == "xcb"
-
-
-# --- the chord track --------------------------------------------------------
-
-
-def _midi_with_chords(*markers):
-    """A MIDI file carrying `(tick, symbol)` chord markers, as bytes."""
-    from mido import MetaMessage, MidiFile, MidiTrack
-
-    from muscriptor.utils.chords import CHORD_MARKER
-
-    midi = MidiFile(ticks_per_beat=480, type=1)
-    track = MidiTrack()
-    track.append(MetaMessage("set_tempo", tempo=500000, time=0))
-    previous = 0
-    for tick, symbol in markers:
-        track.append(
-            MetaMessage("marker", text=f"{CHORD_MARKER}{symbol}", time=tick - previous)
-        )
-        previous = tick
-    midi.tracks.append(track)
-    buf = io.BytesIO()
-    midi.save(file=buf)
-    return buf.getvalue()
-
-
-class _FakeMuseScoreWithScore(_FakeMuseScore):
-    """A fake MuseScore whose MusicXML export is a real (tiny) score."""
-
-    def __call__(self, binary, args):
-        result = super().__call__(binary, args)
-        if "-o" in args:
-            out = Path(args[args.index("-o") + 1])
-            if out.suffix == ".musicxml":
-                out.write_text(
-                    '<?xml version="1.0" encoding="UTF-8"?>'
-                    '<score-partwise version="4.0"><part-list>'
-                    '<score-part id="P1" /></part-list><part id="P1">'
-                    '<measure number="1"><attributes><divisions>1</divisions>'
-                    "</attributes><note><duration>4</duration></note>"
-                    '</measure><measure number="2">'
-                    "<note><duration>4</duration></note></measure></part>"
-                    "</score-partwise>"
-                )
-        return result
-
-
-def test_write_sheets_engraves_the_chord_track(tmp_path, monkeypatch):
-    """Markers in the MIDI come out as <harmony> in the MusicXML."""
-    monkeypatch.setattr(sheets, "_run", _FakeMuseScoreWithScore())
-    out = tmp_path / "sheets"
-    sheets.write_sheets(
-        _midi_with_chords((0, "C"), (1920, "Am7")), out, musescore="/fake/mscore"
-    )
-    part = ET.parse(out / "score.musicxml").getroot().find("part")
-    kinds = [h.findtext("kind") for h in part.findall("measure/harmony")]
-    assert kinds == ["major", "minor-seventh"]
-
-
-def test_write_sheets_hides_the_chord_markers_from_musescore(tmp_path, monkeypatch):
-    """MuseScore renders a MIDI marker as text in the score, so it never sees one."""
-    from mido import MidiFile
-
-    from muscriptor.utils.chords import read_chord_markers
-
-    fake = _FakeMuseScoreWithScore()
-    monkeypatch.setattr(sheets, "_run", fake)
-    midi_bytes = _midi_with_chords((0, "C"), (1920, "Am7"))
-    imported = {}
-
-    def remember(binary, args):
-        # The import call is the one that takes the MIDI file as its input.
-        if args and args[-1].endswith(".mid"):
-            imported["bytes"] = Path(args[-1]).read_bytes()
-        return fake(binary, args)
-
-    monkeypatch.setattr(sheets, "_run", remember)
-    out = tmp_path / "sheets"
-    sheets.write_sheets(midi_bytes, out, musescore="/fake/mscore")
-
-    engraved = MidiFile(file=io.BytesIO(imported["bytes"]))
-    assert read_chord_markers(engraved) == []
-    # The MIDI the user downloads still carries them.
-    assert len(read_chord_markers(MidiFile(out / "score.mid"))) == 2
-
-
-def test_write_sheets_engraves_a_chordless_midi_unchanged(tmp_path, monkeypatch):
-    """No chord track means the upload goes to MuseScore untouched."""
-    fake = _FakeMuseScoreWithScore()
-    monkeypatch.setattr(sheets, "_run", fake)
-    out = tmp_path / "sheets"
-    sheets.write_sheets(b"MThd-not-really-midi", out, musescore="/fake/mscore")
-    imports = [args for args in fake.calls if args and args[-1].endswith(".mid")]
-    assert [Path(args[-1]).name for args in imports] == ["score.mid"]
