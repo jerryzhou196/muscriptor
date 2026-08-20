@@ -262,7 +262,7 @@ class TranscriptionModel:
         for event in model.transcribe("audio.wav"):
             print(event)
 
-        Path("out.mid").write_bytes(model.transcribe_to_midi("audio.wav"))
+        Path("out.mid").write_bytes(model.transcribe_and_postprocess("audio.wav")[0])
     """
 
     def __init__(self, model: LMModel, tokenizer: MT3Tokenizer, device: torch.device):
@@ -370,7 +370,7 @@ class TranscriptionModel:
         The event times may all carry the same small lag (up to ~25 ms) due to model
         bias. Taking it out needs the beat grid and every onset in the transcription,
         which only exist once the stream has finished, so prefer
-        :meth:`transcribe_to_midi` when precise note timing matters.
+        :meth:`transcribe_and_postprocess` when precise note timing matters.
 
         Interleaved with the note events are coarse :class:`ProgressEvent`
         anchors (``completed`` of ``total`` chunks): one up front with
@@ -619,7 +619,7 @@ class TranscriptionModel:
             yield ProgressEvent(completed=batch_start + n, total=num_chunks)
 
     # ------------------------------------------------------------------
-    def transcribe_to_midi(
+    def transcribe_and_postprocess(
         self,
         audio: str | Path | tuple[torch.Tensor, int],
         use_sampling: bool = False,
@@ -632,22 +632,50 @@ class TranscriptionModel:
         prelude_forcing: bool = True,
         detect_tempo: TempoDetection = "best-effort",
         recognize_chords: bool = True,
-    ) -> bytes:
-        """Same as :meth:`transcribe` but returns a MIDI file as bytes."""
+        quantize: bool = False,
+    ) -> tuple[bytes, BeatGrid | None]:
+        """Same as :meth:`transcribe`, but as a MIDI file plus the grid it used.
+
+        The grid comes back measured against the transcription's own onsets, so
+        its `onset_delay` and `beat_subdivision` are filled in; it is None when
+        no tempo was detected.
+
+        `quantize` snaps the notes onto that subdivision, which is what sheet
+        music has to be engraved from (see :meth:`events_to_midi_bytes`) and not
+        what anyone wants to listen to. The returned grid says whether there was
+        a subdivision to snap to at all.
+
+        `recognize_chords` hears the harmony from the audio and writes it into
+        the MIDI as markers, snapped to the detected beat grid when available.
+        """
         beat_grid = self.detect_beat_grid_for(audio, detect_tempo)
-        chords = self.recognize_chords_for(audio, beat_grid) if recognize_chords else []
-        events = self.transcribe(
-            audio,
-            use_sampling=use_sampling,
-            temperature=temperature,
-            cfg_coef=cfg_coef,
-            instruments=instruments,
-            batch_size=batch_size,
-            no_eos_is_ok=no_eos_is_ok,
-            beam_size=beam_size,
-            prelude_forcing=prelude_forcing,
+        chords = (
+            self.recognize_chords_for(audio, beat_grid) if recognize_chords else []
         )
-        return self.events_to_midi_bytes(events, beat_grid=beat_grid, chords=chords)
+        events = list(
+            self.transcribe(
+                audio,
+                use_sampling=use_sampling,
+                temperature=temperature,
+                cfg_coef=cfg_coef,
+                instruments=instruments,
+                batch_size=batch_size,
+                no_eos_is_ok=no_eos_is_ok,
+                beam_size=beam_size,
+                prelude_forcing=prelude_forcing,
+            )
+        )
+        if beat_grid is not None:
+            beat_grid = beat_grid.with_onset_delay(
+                [ev.start_time for ev in events if isinstance(ev, NoteStartEvent)]
+            )
+        midi_bytes = self.events_to_midi_bytes(
+            iter(events),
+            beat_grid=beat_grid,
+            chords=chords,
+            quantize=quantize,
+        )
+        return midi_bytes, beat_grid
 
     def detect_beat_grid_for(
         self,
@@ -703,14 +731,20 @@ class TranscriptionModel:
         events: Iterator[NoteStartEvent | NoteEndEvent | ProgressEvent],
         beat_grid: BeatGrid | None = None,
         chords: Sequence[Chord] | None = None,
+        quantize: bool = False,
     ) -> bytes:
         """Reassemble Notes from a NoteStart/NoteEnd stream and serialize MIDI.
 
-        Shared by :meth:`transcribe_to_midi` and the HTTP server, so the MIDI
+        Shared by :meth:`transcribe_and_postprocess` and the HTTP server, so the MIDI
         bytes are identical regardless of how the events were obtained.
 
         `chords` (from :meth:`recognize_chords_for`) are written along as
         markers, moved onto the beat grid with the notes.
+
+        `quantize` snaps the notes onto `beat_grid.beat_subdivision` first,
+        which is what sheet music has to be engraved from (see
+        `muscriptor.utils.midi.quantized_notes`) and not what anyone wants to
+        listen to. Call twice for both versions of the same transcription.
         """
         notes: list[Note] = []
         open_notes: dict[int, Note] = {}
@@ -744,7 +778,11 @@ class TranscriptionModel:
         notes = validate_notes(notes, fix=True)
         notes = trim_overlapping_notes(notes, sort=True)
         midi = notes_to_midi(
-            notes, program_names=program_names, beat_grid=beat_grid, chords=chords
+            notes,
+            program_names=program_names,
+            beat_grid=beat_grid,
+            chords=chords,
+            quantize=quantize,
         )
         buf = io.BytesIO()
         midi.save(file=buf)

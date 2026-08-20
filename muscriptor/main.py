@@ -49,18 +49,25 @@ class OutputFormat(str, Enum):
     sheets = "sheets"
 
 
-def _transcribe_to_midi(
-    model, kwargs: dict, detect_tempo: str, recognize_chords: bool = True
-) -> bytes:
-    """transcribe_to_midi with the CLI's --detect-tempo spelling and error text."""
+def _transcribe(
+    model,
+    kwargs: dict,
+    detect_tempo: str,
+    recognize_chords: bool = True,
+    quantize: bool = False,
+):
+    """transcribe_and_postprocess, with the CLI's --detect-tempo spelling and errors."""
     try:
         mode: TempoDetection = {
             "true": True,
             "false": False,
             "best-effort": "best-effort",
         }[detect_tempo]
-        return model.transcribe_to_midi(
-            **kwargs, detect_tempo=mode, recognize_chords=recognize_chords
+        return model.transcribe_and_postprocess(
+            **kwargs,
+            detect_tempo=mode,
+            recognize_chords=recognize_chords,
+            quantize=quantize,
         )
     except BeatDetectionError as e:
         typer.echo(f"Error: {e}", err=True)
@@ -338,10 +345,18 @@ def transcribe(
     )
 
     if format == OutputFormat.sheets:
-        midi_bytes = _transcribe_to_midi(model, kwargs, detect_tempo, chords)
+        # Quantize to get the "idealized" timing, otherwise we might get very weird
+        # 1/64th rests etc.
+        midi_bytes, grid = _transcribe(
+            model, kwargs, detect_tempo, recognize_chords=chords, quantize=True
+        )
         typer.echo(f"Engraving sheet music with MuseScore → {output} …", err=True)
         try:
-            written = write_sheets(midi_bytes, output)
+            written = write_sheets(
+                midi_bytes,
+                output,
+                quantized=grid is not None and grid.beat_subdivision is not None,
+            )
         except MuseScoreError as e:
             typer.echo(f"Error: {e}", err=True)
             raise typer.Exit(1)
@@ -349,7 +364,9 @@ def transcribe(
             typer.echo(f"  {path.name}", err=True)
         typer.echo(f"Saved {len(written)} files to {output}", err=True)
     elif format == OutputFormat.midi:
-        midi_bytes = _transcribe_to_midi(model, kwargs, detect_tempo, chords)
+        midi_bytes, _ = _transcribe(
+            model, kwargs, detect_tempo, recognize_chords=chords
+        )
         if is_stdout:
             sys.stdout.buffer.write(midi_bytes)
             sys.stdout.buffer.flush()

@@ -3,7 +3,12 @@
 import dataclasses
 from collections.abc import Sequence
 
-from muscriptor.tokenizer.notes import Note, note2note_event, note_event2midi
+from muscriptor.tokenizer.notes import (
+    Note,
+    note2note_event,
+    note_event2midi,
+    trim_overlapping_notes,
+)
 from muscriptor.utils.beats import BeatGrid
 from muscriptor.utils.chords import Chord, to_markers
 
@@ -30,6 +35,7 @@ def notes_to_midi(
     program_names: dict[int, str] | None = None,
     beat_grid: BeatGrid | None = None,
     chords: Sequence[Chord] | None = None,
+    quantize: bool = False,
 ):
     """Convert a list of Note objects to a mido MidiFile.
 
@@ -46,6 +52,9 @@ def notes_to_midi(
     `chords` are the recognized chords (see muscriptor.utils.chords), written
     as markers on the meta track. They move with the notes, so a chord change
     stays over the notes it belongs to.
+
+    `quantize` additionally snaps every note onto the beat subdivision, if present
+    in the passed `beat_grid`.
     """
     beat_grid = beat_grid or PLACEHOLDER_GRID
     if beat_grid.onset_delay is None:
@@ -54,13 +63,47 @@ def notes_to_midi(
     markers = [
         (seconds - delay, symbol) for seconds, symbol in to_markers(chords or [])
     ]
+    offset = beat_grid.bar_offset(min_shift=delay)
+    notes = shifted_notes(notes, -delay)
+
+    if quantize and beat_grid.beat_subdivision is not None:
+        step = 60.0 / beat_grid.bpm / beat_grid.beat_subdivision
+        notes = quantized_notes(notes, step, offset)
+
     return note_event2midi(
-        note2note_event(shifted_notes(notes, -delay)),
+        note2note_event(notes),
         output_file=None,
         velocity=velocity,
         tempo=round(60_000_000 / beat_grid.bpm),
         program_names=program_names,
         beats_per_bar=beat_grid.beats_per_bar,
-        offset_s=beat_grid.bar_offset(min_shift=delay),
+        offset_s=offset,
         chord_markers=markers,
     )
+
+
+def quantized_notes(notes: list[Note], step: float, offset_s: float) -> list[Note]:
+    """`notes` with every onset and offset moved onto a `step`-second grid.
+
+    Snapped in the timeline the MIDI file will have — `offset_s` is the shift
+    that puts bar 1 at tick 0 — so the notes land on whole grid steps from the
+    start of the score rather than a constant fraction off it.
+    """
+
+    def snap(t: float) -> float:
+        return round((t + offset_s) / step) * step - offset_s
+
+    snapped = []
+    for note in notes:
+        onset = snap(note.onset)
+        snapped.append(
+            dataclasses.replace(
+                note,
+                onset=onset,
+                # A note shorter than half a step rounds to nothing and would
+                # vanish from the score; give it the shortest length the grid has.
+                offset=max(snap(note.offset), onset + step),
+            )
+        )
+    # Bumping the short ones can make two notes of the same pitch overlap.
+    return trim_overlapping_notes(snapped)

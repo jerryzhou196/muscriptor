@@ -30,6 +30,9 @@ type EndEvent = {
 type TranscriptionCompleteEvent = {
   type: "transcription_complete";
   data: string; // base64-encoded .mid file
+  // The same notes snapped to the beat grid, for engraving; null when there was
+  // no grid to snap them to.
+  quantized_midi: string | null;
   beat_grid: BeatGrid | null; // null when no constant tempo was detected
   // Recognized chord changes; empty when none were found. Carries what the
   // lane draws (`label`) and what the chord track plays (`root`, `intervals`).
@@ -44,6 +47,18 @@ type StreamedEvent =
   StartEvent | EndEvent | TranscriptionCompleteEvent | ProgressMsg;
 
 export type AppState = "idle" | "transcribing" | "done" | "error";
+
+/** Everything a finished transcription hands the UI to export. */
+export type TranscriptionResult = {
+  /** Object URL of `midi`, for the download anchor. Revoked when replaced. */
+  url: string;
+  midi: Blob;
+  /** The same notes snapped to the beat grid, which is what sheet music has to
+   *  be engraved from; null when there was no grid to snap them to. */
+  quantizedMidi: Blob | null;
+  /** What to call `midi` when it is saved: the uploaded file's name, as .mid. */
+  filename: string;
+};
 
 /** Stable id for this browser tab, sent as `X-Client-Id` on every transcribe
  *  request. Generated once per JS realm, so it's shared across resubmits within
@@ -81,18 +96,14 @@ export interface TranscriptionDeps {
   setAppState: (s: AppState) => void;
   /** Detected-instrument names, in first-seen order. */
   setInstruments: Dispatch<SetStateAction<string[]>>;
-  /** Object URL of the assembled MIDI file, or null to disable download. */
-  setMidiUrl: (url: string | null) => void;
-  /** Raw MIDI blob, re-uploaded to /auralize for the mix download. */
-  setMidiBlob: (blob: Blob | null) => void;
+  /** The finished transcription's exports, or null to disable the downloads. */
+  setResult: (result: TranscriptionResult | null) => void;
   /** Source audio file, re-uploaded to /auralize alongside the MIDI. */
   setCurrentFile: (file: File | null) => void;
   setUserScrolled: (v: boolean) => void;
   /** How many chords were recognized, so the UI can offer (or grey out) the
    *  chord track. Reset to 0 when a new transcription starts. */
   setChordCount: (n: number) => void;
-  /** Mutated so the download anchor can name the saved file. */
-  midiFilenameRef: RefObject<string>;
 }
 
 /**
@@ -112,12 +123,10 @@ export function useTranscription(deps: TranscriptionDeps) {
     onBusy,
     setAppState,
     setInstruments,
-    setMidiUrl,
-    setMidiBlob,
+    setResult,
     setCurrentFile,
     setUserScrolled,
     setChordCount,
-    midiFilenameRef,
   } = deps;
 
   // Names already surfaced in the instrument list this run.
@@ -151,18 +160,29 @@ export function useTranscription(deps: TranscriptionDeps) {
       URL.revokeObjectURL(midiUrlRef.current);
       midiUrlRef.current = null;
     }
-    setMidiUrl(null);
-    setMidiBlob(null);
+    setResult(null);
   }
 
-  function setMidi(base64: string) {
+  function midiBlobOf(base64: string): Blob {
     const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
-    const blob = new Blob([bytes], { type: "audio/midi" });
+    return new Blob([bytes], { type: "audio/midi" });
+  }
+
+  function setMidi(
+    base64: string,
+    quantizedBase64: string | null,
+    filename: string,
+  ) {
+    const midi = midiBlobOf(base64);
     if (midiUrlRef.current !== null) URL.revokeObjectURL(midiUrlRef.current);
-    const url = URL.createObjectURL(blob);
+    const url = URL.createObjectURL(midi);
     midiUrlRef.current = url;
-    setMidiUrl(url);
-    setMidiBlob(blob);
+    setResult({
+      url,
+      midi,
+      quantizedMidi: quantizedBase64 ? midiBlobOf(quantizedBase64) : null,
+      filename,
+    });
   }
 
   function onEvent(ev: StartEvent | EndEvent) {
@@ -209,7 +229,7 @@ export function useTranscription(deps: TranscriptionDeps) {
     reset();
     clearMidi();
     progress.reset();
-    midiFilenameRef.current = file.name.replace(/\.[^/.]+$/, "") + ".mid";
+    const midiFilename = file.name.replace(/\.[^/.]+$/, "") + ".mid";
     setAppState("transcribing");
     // Resume the AudioContext now, while we still have the user-gesture
     // activation from the drop / file-pick. Without this, calling play()
@@ -257,7 +277,7 @@ export function useTranscription(deps: TranscriptionDeps) {
         const ev = raw as StreamedEvent;
         if (ev.type === "transcription_complete") {
           // Final event: the assembled MIDI file. Enables the download button.
-          setMidi(ev.data);
+          setMidi(ev.data, ev.quantized_midi, midiFilename);
           // Tempo came with it — redraw the time grid as bars instead of seconds,
           // and move the notes onto the beats (the MIDI above already has them
           // there), in the roll and in the scheduled playback alike.

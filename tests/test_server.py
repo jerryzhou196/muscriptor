@@ -21,6 +21,7 @@ from muscriptor.events import NoteEndEvent, NoteStartEvent, ProgressEvent
 from muscriptor.server import create_app, event_to_dict
 from muscriptor.transcription_model import TranscriptionModel
 from muscriptor.utils.beats import BeatGrid
+from muscriptor.utils.chords import Chord
 from muscriptor.utils.sheets import MuseScoreError, MuseScoreNotFoundError
 
 FAKE_MIDI = b"FAKE_MIDI_BYTES"
@@ -36,7 +37,7 @@ def make_model(events=(), midi=FAKE_MIDI):
     model = create_autospec(TranscriptionModel, instance=True)
     model.transcribe.return_value = list(events)
     model.events_to_midi_bytes.return_value = midi
-    model.transcribe_to_midi.return_value = midi
+    model.transcribe_and_postprocess.return_value = (midi, None)
     # No tempo by default; tests that care set a real BeatGrid.
     model.detect_beat_grid_for.return_value = None
     return model
@@ -120,6 +121,8 @@ def test_transcribe_streams_sse_events(tmp_path):
     assert parsed[-1] == {
         "type": "transcription_complete",
         "data": base64.b64encode(FAKE_MIDI).decode("ascii"),
+        # FAKE_MIDI is not real MIDI and there is no grid, so nothing to snap.
+        "quantized_midi": None,
         "beat_grid": None,
         "chords": [],
     }
@@ -150,6 +153,33 @@ def test_transcribe_sends_beat_grid(tmp_path):
         # from, so the UI is told to shift its notes by nothing.
         "onset_delay": 0.0,
     }
+
+
+def test_transcribe_quantized_midi_keeps_recognized_chords(tmp_path, monkeypatch):
+    """The MIDI sent to sheet engraving must retain the recognized harmony."""
+    grid = BeatGrid(
+        bpm=120,
+        beats_per_bar=4,
+        first_downbeat=0.0,
+        onset_delay=0.0,
+        beat_subdivision=4,
+    )
+    monkeypatch.setattr(BeatGrid, "with_onset_delay", lambda self, onsets: self)
+    recognized = [Chord(start=0.0, end=1.0, root=0, quality="maj")]
+    model = make_model()
+    model.detect_beat_grid_for.return_value = grid
+    model.recognize_chords_for.return_value = recognized
+
+    resp = TestClient(create_app(model)).post(
+        "/transcribe",
+        files={"file": ("silent.wav", _wav_bytes(tmp_path), "audio/wav")},
+    )
+
+    assert resp.status_code == 200
+    assert model.events_to_midi_bytes.call_count == 2
+    quantized = model.events_to_midi_bytes.call_args_list[1]
+    assert quantized.kwargs["chords"] == recognized
+    assert quantized.kwargs["quantize"] is True
 
 
 def test_transcribe_forwards_progress(tmp_path):
@@ -192,6 +222,7 @@ def test_transcribe_empty_stream(tmp_path):
         {
             "type": "transcription_complete",
             "data": base64.b64encode(FAKE_MIDI).decode("ascii"),
+            "quantized_midi": None,
             "beat_grid": None,
             "chords": [],
         }
@@ -299,8 +330,8 @@ def test_transcribe_midi_passes_tensor_and_instruments(tmp_path):
         data={"instruments": ["violin", "drums"]},
     )
     assert resp.status_code == 200
-    (audio,) = model.transcribe_to_midi.call_args.args
-    assert model.transcribe_to_midi.call_args.kwargs["instruments"] == [
+    (audio,) = model.transcribe_and_postprocess.call_args.args
+    assert model.transcribe_and_postprocess.call_args.kwargs["instruments"] == [
         "violin",
         "drums",
     ]
@@ -340,7 +371,7 @@ def test_transcribe_midi_rejects_audio_over_duration_limit(tmp_path, monkeypatch
         files={"file": ("silent.wav", _wav_bytes(tmp_path), "audio/wav")},
     )
     assert resp.status_code == 413
-    model.transcribe_to_midi.assert_not_called()
+    model.transcribe_and_postprocess.assert_not_called()
 
 
 def _blocking_transcribe_model(first_reached: threading.Event, gate: threading.Event):
@@ -419,6 +450,8 @@ def test_concurrent_different_clients_do_not_preempt(tmp_path):
     assert out["A"][-1] == {
         "type": "transcription_complete",
         "data": base64.b64encode(FAKE_MIDI).decode("ascii"),
+        # FAKE_MIDI is not real MIDI and there is no grid, so nothing to snap.
+        "quantized_midi": None,
         "beat_grid": None,
         "chords": [],
     }
@@ -475,7 +508,7 @@ def test_concurrent_same_client_preempts(tmp_path):
 FAKE_PDF = b"%PDF-1.4 fake"
 
 
-def _fake_write_sheets(midi_bytes, out_dir, musescore=None):
+def _fake_write_sheets(midi_bytes, out_dir, musescore=None, quantized=False):
     """Stand-in for write_sheets: the real file set, with dummy contents."""
     out_dir.mkdir(parents=True, exist_ok=True)
     written = []
@@ -532,21 +565,42 @@ def test_sheets_zip_is_stored_not_deflated(monkeypatch):
 def test_sheets_passes_the_uploaded_midi_through(monkeypatch):
     seen = {}
 
-    def spy(midi_bytes, out_dir, musescore=None):
+    def spy(midi_bytes, out_dir, musescore=None, quantized=False):
         seen["midi"] = midi_bytes
+        seen["quantized"] = quantized
         return _fake_write_sheets(midi_bytes, out_dir)
 
     client = _sheets_client(monkeypatch, write_sheets=spy)
     resp = client.post("/sheets", files={"midi": ("in.mid", b"MThd...", "audio/midi")})
     assert resp.status_code == 200
     assert seen["midi"] == b"MThd..."
+    # Nothing said the upload was on a grid, so the engraving must not assume it.
+    assert seen["quantized"] is False
+
+
+def test_sheets_forwards_the_quantized_flag(monkeypatch):
+    """It decides the triplet search, so a wrong value shows up in the notation."""
+    seen = {}
+
+    def spy(midi_bytes, out_dir, musescore=None, quantized=False):
+        seen["quantized"] = quantized
+        return _fake_write_sheets(midi_bytes, out_dir)
+
+    client = _sheets_client(monkeypatch, write_sheets=spy)
+    resp = client.post(
+        "/sheets",
+        files={"midi": ("in.mid", b"MThd...", "audio/midi")},
+        data={"quantized": "true"},
+    )
+    assert resp.status_code == 200
+    assert seen["quantized"] is True
 
 
 def test_sheets_leaves_nothing_on_disk(monkeypatch):
     """The scratch directory write_sheets rendered into is gone afterwards."""
     dirs = []
 
-    def spy(midi_bytes, out_dir, musescore=None):
+    def spy(midi_bytes, out_dir, musescore=None, quantized=False):
         dirs.append(out_dir)
         return _fake_write_sheets(midi_bytes, out_dir)
 
@@ -564,7 +618,7 @@ def test_sheets_without_musescore_is_503(monkeypatch):
     """A server with no MuseScore is a deployment problem, not a bad request —
     and the install hint has to reach the client."""
 
-    def missing(midi_bytes, out_dir, musescore=None):
+    def missing(midi_bytes, out_dir, musescore=None, quantized=False):
         raise MuseScoreNotFoundError("MuseScore was not found. Downloads: ...")
 
     client = _sheets_client(monkeypatch, write_sheets=missing)
@@ -574,7 +628,7 @@ def test_sheets_without_musescore_is_503(monkeypatch):
 
 
 def test_sheets_reports_a_musescore_failure(monkeypatch):
-    def broken(midi_bytes, out_dir, musescore=None):
+    def broken(midi_bytes, out_dir, musescore=None, quantized=False):
         raise MuseScoreError("MuseScore failed to import the MIDI file.")
 
     client = _sheets_client(
@@ -598,7 +652,7 @@ def test_sheets_engraves_concurrently(monkeypatch):
     gate = threading.Event()
     calls = []
 
-    def blocks_the_first_caller(midi_bytes, out_dir, musescore=None):
+    def blocks_the_first_caller(midi_bytes, out_dir, musescore=None, quantized=False):
         calls.append(1)
         if len(calls) == 1:
             first_reached.set()
