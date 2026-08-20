@@ -11,8 +11,13 @@
 *.sf2
 web/node_modules
 muscriptor/web_dist/
+# Where the Vercel build puts the bundle instead (see web/vercel.json).
+web/dist/
 web/tsconfig.tsbuildinfo
 /dist
+# Local overrides of the build-time API bases (see web/.env.example).
+web/.env
+web/.env.local
 *.egg-info
 __pycache__
 .DS_Store

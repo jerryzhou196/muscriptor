@@ -11,6 +11,7 @@ import { ConditioningPanel } from "./ConditioningPanel";
 import { WaveformEditor } from "./WaveformEditor";
 import type { AudioEdit } from "../audio-edit";
 import type { AppError, SubmitState } from "../App";
+import { transcribeApi, warmChordService } from "../api";
 
 const SERVER_DOWN = "The muscriptor server is temporarily unavailable.";
 
@@ -88,15 +89,24 @@ export function WelcomeScreen(props: {
   );
   const submitting = submitState.phase !== "idle";
 
-  // Probe the server on mount. A failure swaps the file picker for a
-  // server-down notice; success clears a stale server-down notice so the user
-  // can try again once the server recovers. A file error (e.g. an undecodable
-  // upload) is left alone — the server being up doesn't make a bad file good.
+  // Probe the backends on mount. A failed transcription-server probe swaps the
+  // file picker for a server-down notice; success clears a stale server-down
+  // notice so the user can try again once the server recovers. A file error
+  // (e.g. an undecodable upload) is left alone — the server being up doesn't
+  // make a bad file good.
+  //
+  // The chord service, when it is a separate deployment, is probed on the same
+  // occasion — but only to wake it. It may be a Hugging Face Space that sleeps
+  // when idle, so pinging it here means it boots while the user is still
+  // picking a file. Its result deliberately never reaches `error`: chords are
+  // an opt-in extra, so a chord service that stays asleep must not stop anyone
+  // from transcribing, nor look like an outage.
   useEffect(() => {
     let cancelled = false;
+    const warming = new AbortController();
     const clearServerError = () =>
       setError((prev) => (prev?.kind === "server" ? null : prev));
-    fetch("/health")
+    fetch(transcribeApi("/health"))
       .then((r) => {
         if (cancelled) return;
         if (r.ok) clearServerError();
@@ -105,8 +115,10 @@ export function WelcomeScreen(props: {
       .catch(() => {
         if (!cancelled) setError({ kind: "server", message: SERVER_DOWN });
       });
+    void warmChordService(warming.signal);
     return () => {
       cancelled = true;
+      warming.abort();
     };
   }, [setError]);
 
