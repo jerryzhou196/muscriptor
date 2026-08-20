@@ -10,6 +10,10 @@ Chord recognition is **not** here. It runs on CPU in a Hugging Face Docker Space
 because BTC-large-voca is cheap enough on CPU that it does not justify GPU rent.
 This box only carries the expensive part.
 
+The root `docker-compose.yml` is for a Docker-capable host. A standard Vast.ai
+instance is itself an unprivileged container and cannot run Docker-in-Docker,
+so this deployment uses the equivalent native service under Supervisor.
+
 ```
 Vercel (static web UI)
    ├── /analyze     ──► HF Space  (CPU, free)      ← a different PR

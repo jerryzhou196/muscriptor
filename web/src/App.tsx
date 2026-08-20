@@ -34,16 +34,17 @@ type Screen = "welcome" | "transcribe";
 
 /**
  * What has happened to the upload since "Transcribe" was clicked. The welcome
- * screen stays put until the server accepts the request, so a server that is
- * busy with someone else's transcription never yanks the user into an empty
- * piano roll — the button reports the wait instead.
+ * screen stays put until the request reaches the front of the server queue, so
+ * waiting never opens an empty piano roll. `busy` is retained only for a
+ * rolling deployment against an older backend that still answers 503.
  *
- * `submitting` = request in flight; `busy` = refused with 503, retrying at
- * `retryAt` (a `Date.now()` timestamp, so the button can count down to it).
+ * `submitting` = upload in flight; `queued` = FIFO position; `busy` = refused
+ * with 503 by an older server, retrying at `retryAt`.
  */
 export type SubmitState =
   | { phase: "idle" }
   | { phase: "submitting" }
+  | { phase: "queued"; position: number }
   | { phase: "busy"; retryAt: number; attempt: number };
 
 // The song is Headache by Lost Deposit. ig: @lostdeposit
@@ -117,12 +118,13 @@ export function App() {
       setError({ kind: "file", message });
       setScreen("welcome");
     },
-    // The server took the job: only now is there something to show.
+    // The job reached the front: only now is there something to show.
     onAccepted: () => {
       setSubmit({ phase: "idle" });
       setScreen("transcribe");
     },
-    // Refused (503) — stay on the welcome screen and count down to the retry.
+    onQueued: ({ position }) => setSubmit({ phase: "queued", position }),
+    // Compatibility with a pre-queue backend during a rolling deployment.
     onBusy: ({ attempt, retryInMs }) =>
       setSubmit({ phase: "busy", retryAt: Date.now() + retryInMs, attempt }),
     setAppState,
@@ -133,10 +135,9 @@ export function App() {
     setChordCount,
   });
   // Submit the file picked on the welcome screen. The view only switches once
-  // the server has accepted the request (`onAccepted` above); until then the
-  // button reports progress — including waiting out a busy server. Called from
-  // a button click, so the AudioContext unlock inside `transcribe` still
-  // happens under a user gesture.
+  // the request reaches the front (`onAccepted` above); until then the button
+  // shows its queue position. Called from a button click, so the AudioContext
+  // unlock inside `transcribe` still happens under a user gesture.
   function startTranscription() {
     if (selectedFile === null || submit.phase !== "idle") return;
     const audioFile =
@@ -157,16 +158,15 @@ export function App() {
     transcribe(audioFile);
   }
 
-  // Give up on a submission that hasn't been accepted yet (in flight, or waiting
-  // out a busy server): stop retrying and re-enable the button.
+  // Give up on an upload or queued request and re-enable the button.
   function cancelSubmit() {
     abort();
     setSubmit({ phase: "idle" });
     setAppState("idle");
   }
 
-  // Choosing another file drops a not-yet-accepted submission, so a request that
-  // finally gets through can't open the piano roll for the old file.
+  // Choosing another file drops a queued submission, so it cannot later open
+  // the piano roll for a file the user has moved on from.
   function pickFile(file: File) {
     if (submit.phase !== "idle") cancelSubmit();
     setSelectedFile(file);

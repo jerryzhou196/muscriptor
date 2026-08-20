@@ -1,0 +1,44 @@
+name: muscriptor
+
+services:
+  app:
+    image: ${MUSCRIPTOR_IMAGE:-muscriptor:local}
+    build:
+      context: .
+      args:
+        VITE_GA_MEASUREMENT_ID: ${VITE_GA_MEASUREMENT_ID:-}
+    command:
+      - --port
+      - "8000"
+      - --model
+      - ${MUSCRIPTOR_MODEL:-medium}
+      - --device
+      - ${MUSCRIPTOR_DEVICE:-cuda}
+      - --dtype
+      - ${MUSCRIPTOR_DTYPE:-float16}
+    environment:
+      HF_TOKEN: ${HF_TOKEN:?HF_TOKEN must be set to pull the private weights}
+      HF_HOME: /root/.cache/huggingface
+      MUSCRIPTOR_ALLOWED_ORIGINS: ${MUSCRIPTOR_ALLOWED_ORIGINS:-}
+    ports:
+      - "127.0.0.1:${MUSCRIPTOR_PORT:-18000}:8000"
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+    init: true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 3m
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  hf_cache:

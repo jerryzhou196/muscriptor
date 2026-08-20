@@ -28,13 +28,16 @@ function useCountdown(at: number | null): number | null {
   return at === null ? null : Math.max(0, Math.ceil((at - Date.now()) / 1000));
 }
 
-/** Label for the CTA, which doubles as the status readout while an upload is
- *  waiting to be accepted (see `SubmitState`). */
+/** Label for the CTA, which doubles as the upload/queue status readout. */
 function transcribeLabel(
   submitState: SubmitState,
   retryIn: number | null,
 ): string {
-  if (submitState.phase === "submitting") return "Transcribing…";
+  if (submitState.phase === "submitting") return "Joining queue…";
+  if (submitState.phase === "queued") {
+    const requests = submitState.position === 1 ? "request" : "requests";
+    return `Queued — ${submitState.position} ${requests} ahead`;
+  }
   if (submitState.phase === "busy") {
     return retryIn === null || retryIn === 0
       ? "Servers busy, retrying…"
@@ -57,10 +60,9 @@ export function WelcomeScreen(props: {
   onCondChange: (next: Set<string>) => void;
   setEdit: (edit: AudioEdit | null) => void;
   onTranscribe: () => void;
-  /** Where the submitted upload stands; drives the CTA's label + disabled state
-   *  (the screen stays put until the server accepts it). */
+  /** Where the upload stands; the screen stays put until its queued job starts. */
   submitState: SubmitState;
-  /** Stop retrying and re-enable the CTA. */
+  /** Cancel an upload, queued job, or legacy retry and re-enable the CTA. */
   onCancelSubmit: () => void;
   /** True while a file is dragged over the window; swaps the prompt in place. */
   dragging: boolean;

@@ -15,15 +15,13 @@ export interface TranscribeOptions {
   /** Extra multipart form fields to send alongside the file (e.g. instruments). */
   extra?: Record<string, string | string[]>;
   signal?: AbortSignal;
-  /** Sent as the `X-Client-Id` header. The server uses it to scope preemption: a
-   *  new request only cancels an in-flight one that carries the same id (a
-   *  resubmit from this same tab). Two tabs send different ids, so opening a
-   *  second one no longer stops the first tab's transcription. */
+  /** Sent as the `X-Client-Id` header so a resubmit can supersede this tab's
+   *  older active or queued request without affecting other users. */
   clientId?: string;
-  /** Called once the server has accepted the upload (2xx — it holds the
-   *  transcription lock and the stream is opening). The UI waits for this before
-   *  leaving the welcome screen, so a refused attempt never navigates away. */
+  /** Called once the queued job reaches the front and starts transcribing. */
   onAccepted?: () => void;
+  /** Called when the server reports how many requests are ahead in its FIFO. */
+  onQueued?: (info: { position: number }) => void;
   /** Called on each 503 refusal (another transcription is in progress), with the
    *  wait until the next attempt. Only `streamTranscribeWithRetry` reports it. */
   onBusy?: (info: { attempt: number; retryInMs: number }) => void;
@@ -35,7 +33,7 @@ export async function* streamTranscribe(
   file: File,
   opts: TranscribeOptions = {},
 ): AsyncGenerator<unknown> {
-  const { extra, signal, clientId, onAccepted } = opts;
+  const { extra, signal, clientId, onAccepted, onQueued } = opts;
   const form = new FormData();
   form.append("file", file, file.name);
   if (extra) {
@@ -66,7 +64,12 @@ export async function* streamTranscribe(
       status: resp.status,
     });
   }
-  onAccepted?.();
+  let accepted = false;
+  const accept = () => {
+    if (accepted) return;
+    accepted = true;
+    onAccepted?.();
+  };
   const reader = resp.body
     .pipeThrough(new TextDecoderStream())
     .getReader();
@@ -81,7 +84,23 @@ export async function* streamTranscribe(
       buf = buf.slice(sep + 2);
       for (const line of chunk.split("\n")) {
         if (line.startsWith("data: ")) {
-          yield JSON.parse(line.slice(6));
+          const message = JSON.parse(line.slice(6));
+          if (
+            message?.type === "queued" &&
+            Number.isInteger(message.position) &&
+            message.position > 0
+          ) {
+            onQueued?.({ position: message.position });
+            continue;
+          }
+          if (message?.type === "transcription_started") {
+            accept();
+            continue;
+          }
+          // Compatibility with servers from before the queue protocol: their
+          // first real transcription event means the model has started.
+          accept();
+          yield message;
         }
       }
     }
@@ -112,14 +131,9 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
 const RETRY_INTERVAL_MS = 5000;
 
 /** Like `streamTranscribe`, but transparently retries every
- *  `RETRY_INTERVAL_MS` when the server reports 503 (busy with another
- *  transcription). The backend refuses instantly rather than holding the
- *  connection open, so a reverse proxy fronting multiple backends (e.g.
- *  Traefik) gets a chance to route each retry to a different, idle machine.
+ *  `RETRY_INTERVAL_MS` when an older server reports 503 instead of queueing.
  *
- *  Each refusal is reported through `opts.onBusy` so the UI can say the servers
- *  are busy and count down to the next attempt; `opts.onAccepted` fires on the
- *  attempt that gets through. */
+ *  This keeps the frontend usable during a rolling backend deployment. */
 export async function* streamTranscribeWithRetry(
   url: string,
   file: File,
