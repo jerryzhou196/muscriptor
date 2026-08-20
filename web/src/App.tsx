@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
+import { Analytics } from "@vercel/analytics/react";
 import type { PianoRoll } from "./pianoroll";
 import { useAudioEngine } from "./hooks/useAudioEngine";
 import {
@@ -479,6 +480,8 @@ export function App() {
       <ConsentBanner />
 
       {screen === "transcribe" && <DropOverlay />}
+
+      <Analytics />
     </>
   );
 }
