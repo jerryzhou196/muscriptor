@@ -65,9 +65,16 @@ _INSTALL_HINT = (
 # MuseScore's MIDI import settings, passed with -M. HumanPerformance and
 # QuantValue are MuseScore 4's own defaults, but spell them out.
 # Element names and the QuantValue index are MuseScore's own; 2 == 1/16.
+# ClefChanges is off. Left on, MuseScore writes a clef change into a staff
+# wherever a passage strays out of its range, so on a transcription — where the
+# hands wander and the split between them is a guess — the treble and bass
+# clefs trade places several times down the page, and the reader has to check
+# which clef is in force before they can read a note. The clefs the score opens
+# with are then pinned by `pin_grand_staff_clefs`.
 _IMPORT_OPTIONS = """<?xml version="1.0" encoding="UTF-8"?>
 <MidiOptions>
   <QuantValue>2</QuantValue>
+  <ClefChanges>false</ClefChanges>
   <HumanPerformance>true</HumanPerformance>
   <Duplets>false</Duplets>
   <Triplets>{triplets}</Triplets>
@@ -341,6 +348,48 @@ def _retype_as_tablature(staff: ET.Element, preset: str, strings: int) -> None:
     ET.SubElement(staff_type, "lineDistance").text = _TAB_LINE_DISTANCE
 
 
+# The clefs a piano's grand staff is read with, top staff first.
+_GRAND_STAFF_CLEFS = ("G", "F")
+
+
+def pin_grand_staff_clefs(mscx_path: Path) -> int:
+    """Write every two-staff part as treble over bass, in place.
+
+    MuseScore picks a staff's clef from the average pitch of whatever the
+    hand split happened to put on it. That is a measurement, and on a
+    transcription it comes out differently every time: a piece that sits high
+    is engraved treble-over-treble, one that sits low bass-over-bass, and only
+    a piece with two well-separated hands gets the grand staff a pianist
+    expects. Which clef is on top should not depend on the material, so it is
+    stated here instead of inferred.
+
+    This is the staff's *default* clef rather than a clef at the head of bar 1:
+    MuseScore emits its own derived clef there regardless, and a second one in
+    the same place is drawn as well, stacked against it.
+
+    Parts that are not two staves are left alone, so nothing but a keyboard is
+    touched. Returns the number of parts pinned.
+    """
+    tree = ET.parse(mscx_path)
+    score = tree.getroot().find("Score")
+    if score is None:
+        raise MuseScoreError(f"{mscx_path} has no <Score> element")
+
+    pinned = 0
+    for part in score.findall("Part"):
+        staves = part.findall("Staff")
+        if len(staves) != len(_GRAND_STAFF_CLEFS):
+            continue
+        for staff, sign in zip(staves, _GRAND_STAFF_CLEFS):
+            for existing in staff.findall("defaultClef"):
+                staff.remove(existing)
+            ET.SubElement(staff, "defaultClef").text = sign
+        pinned += 1
+
+    tree.write(mscx_path, encoding="UTF-8", xml_declaration=True)
+    return pinned
+
+
 def _split_off_chords(
     midi_bytes: bytes, tmp_dir: Path, fallback: Path
 ) -> tuple[list[tuple[float, str]], Path]:
@@ -405,6 +454,9 @@ def write_sheets(
         proc = _run(binary, ["-M", str(options), "-o", str(mscx), str(to_import)])
         if not mscx.is_file():
             _fail("import the MIDI file", proc)
+        # Before anything is rendered or exported from it, so the MusicXML and
+        # every PDF are read with the same clefs.
+        pin_grand_staff_clefs(mscx)
 
         musicxml = out_dir / "score.musicxml"
         proc = _run(binary, ["-o", str(musicxml), str(mscx)])
